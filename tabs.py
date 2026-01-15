@@ -564,7 +564,21 @@ def cmd_medley(args):
         print("Could not build a medley (not enough compatible songs)")
         return
 
-    # Display the medley
+    # Generate combined tabs if requested
+    if args.tabs:
+        output = medley_lib.generate_medley_tabs(
+            medley,
+            embeddings_data=embeddings_data if has_embeddings else None,
+        )
+        if args.output:
+            output_path = Path(args.output)
+            output_path.write_text(output, encoding="utf-8")
+            print(f"\nMedley tabs written to: {output_path}")
+        else:
+            print("\n" + output)
+        return
+
+    # Display the medley summary
     print(f"\n{'='*60}")
     print(f"MEDLEY ({len(medley)} songs)")
     print(f"{'='*60}\n")
@@ -584,6 +598,8 @@ def cmd_medley(args):
     if stats.get('themes_covered'):
         print(f"Themes: {', '.join(stats['themes_covered'][:5])}")
     print(f"Keys: {' -> '.join(stats['keys'])}")
+
+    print(f"\nTip: Use --tabs to output the full combined tab sheet")
 
 
 def main():
@@ -608,6 +624,7 @@ LLM-powered (requires LMStudio):
 
 Medley building:
   medley    Build a medley from a seed song (uses all signals)
+            Use --tabs to output combined tab sheet
 
 Examples:
   python tabs.py list --artist "Pink Floyd"
@@ -616,7 +633,9 @@ Examples:
   python tabs.py similar "Hotel California"              # comprehensive
   python tabs.py similar "Hotel California" --by chords  # chords only
   python tabs.py similar "Hotel California" --by embeddings  # lyrics only
-  python tabs.py medley "Wish You Were Here" --count 6
+  python tabs.py medley "Wish You Were Here" --count 6   # summary only
+  python tabs.py medley "Wish You Were Here" --tabs      # full tab sheet
+  python tabs.py medley "Wish You Were Here" --tabs -o medley.txt  # save to file
   python tabs.py index --rebuild
   python tabs.py enrich --limit 10
   python tabs.py embed --limit 10
@@ -701,6 +720,9 @@ Examples:
     p_medley.add_argument("--count", "-n", type=int, default=5, help="Number of songs")
     p_medley.add_argument("--mood", "-m", help="Filter by mood")
     p_medley.add_argument("--same-artist", action="store_true", help="Allow same artist")
+    p_medley.add_argument("--tabs", "-t", action="store_true",
+                          help="Output full combined tab sheet (not just summary)")
+    p_medley.add_argument("--output", "-o", help="Write tabs to file instead of stdout")
     p_medley.set_defaults(func=cmd_medley)
 
     args = parser_main.parse_args()

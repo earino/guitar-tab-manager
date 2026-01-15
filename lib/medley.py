@@ -325,3 +325,83 @@ def analyze_medley(medley: list[dict], embeddings_data: dict = None) -> dict:
         "thematic_coherence": thematic_coherence,
         "transition_scores": transition_scores,
     }
+
+
+def generate_medley_tabs(
+    medley: list[dict],
+    embeddings_data: dict = None,
+) -> str:
+    """
+    Generate a combined tab sheet for the entire medley.
+
+    Reads each tab file and concatenates them with transition suggestions,
+    producing a single playable document.
+    """
+    from pathlib import Path
+
+    lines = []
+    stats = analyze_medley(medley, embeddings_data)
+
+    # Header
+    lines.append("=" * 70)
+    lines.append(f"MEDLEY: {len(medley)} songs")
+    lines.append(f"Keys: {' -> '.join(stats['keys'])}")
+    lines.append(f"Transition score: {stats['avg_transition_score']:.0%}" +
+                 (f" | Thematic coherence: {stats['thematic_coherence']:.0%}" if stats['thematic_coherence'] else ""))
+    lines.append("=" * 70)
+    lines.append("")
+
+    for i, song in enumerate(medley):
+        artist = song.get("artist", "Unknown")
+        title = song.get("song", "Unknown")
+        key = song.get("key", "?")
+        capo = song.get("capo")
+        themes = song.get("themes") or []
+        file_path = song.get("file_path")
+
+        # Song header
+        lines.append("-" * 70)
+        lines.append(f"[{i + 1}/{len(medley)}] {title.upper()} - {artist}")
+
+        details = [f"Key: {key}"]
+        if capo:
+            details.append(f"Capo: {capo}")
+        if themes:
+            details.append(f"Themes: {', '.join(themes[:3])}")
+        lines.append(" | ".join(details))
+        lines.append("-" * 70)
+        lines.append("")
+
+        # Read and include tab content
+        if file_path:
+            try:
+                content = Path(file_path).read_text(encoding="utf-8")
+                # Skip the header (everything before ---)
+                if "---" in content:
+                    content = content.split("---", 1)[1].strip()
+                lines.append(content)
+            except Exception as e:
+                lines.append(f"[Error reading tab: {e}]")
+        else:
+            lines.append("[Tab file not found]")
+
+        lines.append("")
+
+        # Transition suggestion to next song
+        if i < len(medley) - 1:
+            next_song = medley[i + 1]
+            transition = suggest_transition(song, next_song, embeddings_data)
+            lines.append("")
+            lines.append(">" * 70)
+            lines.append(f">>> TRANSITION TO: {next_song.get('song', 'Unknown')} - {next_song.get('artist', 'Unknown')}")
+            lines.append(f">>> {transition}")
+            lines.append(">" * 70)
+            lines.append("")
+            lines.append("")
+
+    # Footer
+    lines.append("=" * 70)
+    lines.append("END OF MEDLEY")
+    lines.append("=" * 70)
+
+    return "\n".join(lines)

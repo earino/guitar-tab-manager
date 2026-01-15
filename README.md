@@ -79,8 +79,14 @@ python tabs.py similar "Hallelujah" --by embeddings
 ### Build Medleys
 
 ```bash
-# Build a 6-song medley
+# Build a 6-song medley (shows summary)
 python tabs.py medley "Wish You Were Here" --count 6
+
+# Output the full combined tab sheet
+python tabs.py medley "Wish You Were Here" --tabs
+
+# Save to a file for printing/practice
+python tabs.py medley "Wish You Were Here" --tabs --output my-medley.txt
 
 # Filter by mood
 python tabs.py medley "Yesterday" --mood melancholic
@@ -210,7 +216,9 @@ Keys: Am -> Am -> Am -> Am -> C -> C
 | `python tabs.py search "query"` | Semantic search |
 | `python tabs.py mood "mood"` | Find by mood |
 | `python tabs.py theme "theme"` | Find by theme |
-| `python tabs.py medley "song"` | Build a medley |
+| `python tabs.py medley "song"` | Build a medley (summary) |
+| `python tabs.py medley "song" --tabs` | Build medley with full tab output |
+| `python tabs.py medley "song" --tabs -o file.txt` | Save medley tabs to file |
 
 ## Configuration
 
