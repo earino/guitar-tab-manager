@@ -128,34 +128,52 @@ Content:
                 "description": f"Analysis failed: {e}",
             }
 
-    def embed(self, text: str) -> list[float]:
+    def get_embedding_model(self) -> str:
+        """Find an embedding model from loaded models."""
+        models = self.get_models()
+        for model in models:
+            if "embed" in model.lower():
+                return model
+        return None
+
+    def embed(self, text: str, model: str = None) -> list[float]:
         """
         Get embedding vector for text.
 
         Note: Requires an embedding model loaded in LMStudio.
         """
+        if model is None:
+            model = self.get_embedding_model()
+            if model is None:
+                raise RuntimeError("No embedding model found. Load one in LMStudio (e.g., text-embedding-nomic-embed-text-v1.5)")
+
         try:
             response = self.client.embeddings.create(
-                model="local-model",
+                model=model,
                 input=text,
             )
             return response.data[0].embedding
         except Exception as e:
             raise RuntimeError(f"Embedding failed: {e}")
 
-    def embed_batch(self, texts: list[str], batch_size: int = 10) -> list[list[float]]:
+    def embed_batch(self, texts: list[str], batch_size: int = 10, model: str = None) -> list[list[float]]:
         """
         Get embeddings for multiple texts.
 
         Processes in batches for efficiency.
         """
+        if model is None:
+            model = self.get_embedding_model()
+            if model is None:
+                raise RuntimeError("No embedding model found. Load one in LMStudio (e.g., text-embedding-nomic-embed-text-v1.5)")
+
         embeddings = []
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             try:
                 response = self.client.embeddings.create(
-                    model="local-model",
+                    model=model,
                     input=batch,
                 )
                 embeddings.extend([d.embedding for d in response.data])

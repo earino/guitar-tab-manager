@@ -3,12 +3,15 @@
 Guitar Tab Exploration Tool
 
 Search, explore, and build setlists from your guitar tab collection.
+Uses comprehensive similarity scoring (key, chords, mood, themes, lyrics).
 
 Usage:
     python tabs.py list [--artist X]
     python tabs.py find --artist "Beatles" --chord "Am"
-    python tabs.py chords "Hotel California"
-    python tabs.py index [--rebuild]
+    python tabs.py similar "Hotel California" --by all|chords|embeddings
+    python tabs.py medley "Wish You Were Here" --count 6
+    python tabs.py enrich --limit 10  # add mood/themes (requires LMStudio)
+    python tabs.py embed --limit 10   # generate lyric embeddings (requires LMStudio)
 """
 
 import argparse
@@ -21,6 +24,7 @@ from lib import search
 from lib import parser
 from lib import llm
 from lib import medley as medley_lib
+from lib import embeddings as emb_lib
 
 
 def ensure_index(rebuild: bool = False) -> dict:
@@ -140,7 +144,7 @@ def cmd_chords(args):
 
 
 def cmd_similar(args):
-    """Find songs with similar chords."""
+    """Find songs similar to a seed song using multiple signals."""
     idx = ensure_index()
 
     # Find the target tab
@@ -151,17 +155,81 @@ def cmd_similar(args):
         return
 
     print(f"\nFinding songs similar to: {tab.get('artist')} - {tab.get('song')}")
-    print(f"(Based on chord similarity)\n")
 
-    similar = search.chord_similarity(idx, tab, top_k=args.count)
+    # Determine similarity method
+    method = args.by if hasattr(args, 'by') and args.by else "all"
 
-    if not similar:
+    if method == "chords":
+        print(f"(Based on chord similarity)\n")
+        similar = search.chord_similarity(idx, tab, top_k=args.count)
+        for i, (sim_tab, score) in enumerate(similar, 1):
+            pct = int(score * 100)
+            print(f"  {i}. {search.format_result(sim_tab)} - {pct}% chord overlap")
+        return
+
+    # For "all" or "embeddings", use comprehensive scoring
+    embeddings_data = emb_lib.load_embeddings()
+    has_embeddings = embeddings_data.get("embeddings") is not None and len(embeddings_data.get("file_paths", [])) > 0
+
+    if method == "embeddings":
+        if not has_embeddings:
+            print("No embeddings found. Run 'python tabs.py embed' first.")
+            return
+        print(f"(Based on lyrical/thematic similarity via embeddings)\n")
+        # Use embedding similarity directly
+        target_emb = emb_lib.get_embedding_for_tab(tab, embeddings_data)
+        if target_emb is None:
+            print(f"No embedding found for this song. Run 'python tabs.py embed' to generate.")
+            return
+        similar_paths = emb_lib.find_similar_by_embedding(
+            target_emb,
+            embeddings_data["embeddings"],
+            embeddings_data["file_paths"],
+            top_k=args.count,
+            exclude_path=tab.get("file_path"),
+        )
+        # Map paths back to tabs
+        tabs_dict = idx.get("tabs", {})
+        for i, (path, score) in enumerate(similar_paths, 1):
+            sim_tab = tabs_dict.get(path)
+            if sim_tab:
+                pct = int(score * 100)
+                themes = ", ".join((sim_tab.get("themes") or [])[:2]) or "N/A"
+                print(f"  {i}. {search.format_result(sim_tab)} - {pct}% similar")
+                print(f"      Themes: {themes}")
+        return
+
+    # "all" - comprehensive similarity using medley scoring
+    print(f"(Comprehensive: key + chords + mood + themes" + (" + lyrics" if has_embeddings else "") + ")\n")
+    if has_embeddings:
+        print(f"Using embeddings for lyrical similarity ({len(embeddings_data['file_paths'])} songs)\n")
+    else:
+        print("Tip: Run 'python tabs.py embed' to include lyrical similarity\n")
+
+    all_songs = list(idx.get("tabs", {}).values())
+    scored = medley_lib.find_best_next(
+        tab,
+        all_songs,
+        exclude_artists=None,  # Don't exclude artists for similarity search
+        embeddings_data=embeddings_data if has_embeddings else None,
+    )
+
+    if not scored:
         print("No similar songs found.")
         return
 
-    for i, (sim_tab, score) in enumerate(similar, 1):
+    for i, (sim_tab, score) in enumerate(scored[:args.count], 1):
         pct = int(score * 100)
-        print(f"  {i}. {search.format_result(sim_tab)} - {pct}% chord overlap")
+        details = []
+        if sim_tab.get("key"):
+            details.append(f"Key: {sim_tab['key']}")
+        if sim_tab.get("mood"):
+            details.append(f"Mood: {', '.join(sim_tab['mood'][:2])}")
+        if sim_tab.get("themes"):
+            details.append(f"Themes: {', '.join(sim_tab['themes'][:2])}")
+        print(f"  {i}. {search.format_result(sim_tab)} - {pct}% match")
+        if details:
+            print(f"      {' | '.join(details)}")
 
 
 def cmd_index(args):
@@ -257,6 +325,95 @@ def cmd_enrich(args):
     print(f"\nEnrichment complete!")
     print(f"  Enriched: {enriched}")
     print(f"  Failed: {failed}")
+
+
+def cmd_embed(args):
+    """Generate embeddings for all tabs (for lyrical/thematic similarity)."""
+    import numpy as np
+
+    idx = ensure_index()
+
+    # Check LMStudio availability
+    try:
+        client = llm.require_client()
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        return
+
+    print("LMStudio connected!")
+
+    # Find embedding model
+    embed_model = client.get_embedding_model()
+    if not embed_model:
+        print("Error: No embedding model found in LMStudio.")
+        print("Load an embedding model like 'text-embedding-nomic-embed-text-v1.5'")
+        return
+    print(f"Using embedding model: {embed_model}")
+
+    # Load existing embeddings
+    existing = emb_lib.load_embeddings()
+    existing_paths = set(existing.get("file_paths", []))
+
+    # Find tabs that need embeddings
+    tabs_to_embed = []
+    for file_path, tab in idx.get("tabs", {}).items():
+        if file_path not in existing_paths:
+            tabs_to_embed.append((file_path, tab))
+
+    if not tabs_to_embed:
+        print("\nAll tabs already have embeddings!")
+        return
+
+    if args.limit:
+        tabs_to_embed = tabs_to_embed[:args.limit]
+
+    print(f"\nGenerating embeddings for {len(tabs_to_embed)} tabs...")
+
+    new_paths = []
+    new_embeddings = []
+    failed = 0
+
+    for i, (file_path, tab) in enumerate(tabs_to_embed, 1):
+        song = tab.get("song", "Unknown")
+        artist = tab.get("artist", "Unknown")
+
+        print(f"[{i}/{len(tabs_to_embed)}] {artist} - {song}...", end=" ", flush=True)
+
+        try:
+            # Read tab content
+            content = Path(file_path).read_text(encoding="utf-8")
+
+            # Create embedding text
+            embed_text = emb_lib.get_embedding_text(tab, content)
+
+            # Generate embedding
+            embedding = client.embed(embed_text)
+
+            new_paths.append(file_path)
+            new_embeddings.append(embedding)
+            print("OK")
+
+        except Exception as e:
+            print(f"FAILED: {e}")
+            failed += 1
+
+    # Combine with existing embeddings
+    if existing.get("embeddings") is not None and len(existing["file_paths"]) > 0:
+        all_paths = list(existing["file_paths"]) + new_paths
+        all_embeddings = np.vstack([existing["embeddings"], np.array(new_embeddings)])
+    else:
+        all_paths = new_paths
+        all_embeddings = np.array(new_embeddings) if new_embeddings else np.array([])
+
+    # Save embeddings
+    if len(all_paths) > 0:
+        emb_lib.save_embeddings(all_paths, all_embeddings)
+        print(f"\nEmbeddings saved to {config.EMBEDDINGS_FILE}")
+
+    print(f"\nEmbedding generation complete!")
+    print(f"  Generated: {len(new_embeddings)}")
+    print(f"  Failed: {failed}")
+    print(f"  Total: {len(all_paths)}")
 
 
 def cmd_search(args):
@@ -381,6 +538,15 @@ def cmd_medley(args):
 
     print(f"\nBuilding medley starting from: {seed.get('artist')} - {seed.get('song')}")
 
+    # Load embeddings for lyrical/thematic coherence
+    embeddings_data = emb_lib.load_embeddings()
+    has_embeddings = embeddings_data.get("embeddings") is not None and len(embeddings_data.get("file_paths", [])) > 0
+
+    if has_embeddings:
+        print(f"Using embeddings for thematic coherence ({len(embeddings_data['file_paths'])} songs)")
+    else:
+        print("No embeddings found - run 'python tabs.py embed' for better narrative flow")
+
     # Get all songs
     all_songs = list(idx.get("tabs", {}).values())
 
@@ -391,6 +557,7 @@ def cmd_medley(args):
         count=args.count,
         diverse=not args.same_artist,
         mood_filter=args.mood,
+        embeddings_data=embeddings_data if has_embeddings else None,
     )
 
     if len(medley) < 2:
@@ -402,16 +569,20 @@ def cmd_medley(args):
     print(f"MEDLEY ({len(medley)} songs)")
     print(f"{'='*60}\n")
 
-    print(medley_lib.format_medley(medley, show_transitions=True))
+    print(medley_lib.format_medley(medley, show_transitions=True, embeddings_data=embeddings_data if has_embeddings else None))
 
     # Show analysis
-    stats = medley_lib.analyze_medley(medley)
+    stats = medley_lib.analyze_medley(medley, embeddings_data if has_embeddings else None)
     print(f"\n{'-'*60}")
     print("MEDLEY ANALYSIS")
     print(f"{'-'*60}")
     print(f"Unique artists: {stats['unique_artists']}")
     print(f"Total unique chords: {stats['total_unique_chords']}")
     print(f"Avg transition score: {stats['avg_transition_score']:.1%}")
+    if has_embeddings and stats.get('thematic_coherence'):
+        print(f"Thematic coherence: {stats['thematic_coherence']:.1%}")
+    if stats.get('themes_covered'):
+        print(f"Themes: {', '.join(stats['themes_covered'][:5])}")
     print(f"Keys: {' -> '.join(stats['keys'])}")
 
 
@@ -425,26 +596,30 @@ Commands:
   artists   List all artists in the collection
   find      Find tabs by criteria (artist, song, chord, key, type)
   chords    Show chords for a specific song
-  similar   Find songs with similar chord progressions
+  similar   Find similar songs (by all signals, chords, or embeddings)
   index     Build or show index statistics
 
 LLM-powered (requires LMStudio):
   enrich    Analyze tabs for mood, themes, tempo
+  embed     Generate embeddings for lyrical/thematic similarity
   search    Semantic search by mood/theme
   mood      Find tabs by mood
   theme     Find tabs by theme
 
 Medley building:
-  medley    Build a medley from a seed song
+  medley    Build a medley from a seed song (uses all signals)
 
 Examples:
   python tabs.py list --artist "Pink Floyd"
   python tabs.py find --chord "Am,G,C" --type Chords
   python tabs.py chords "Wish You Were Here"
-  python tabs.py similar "Hotel California" --count 10
+  python tabs.py similar "Hotel California"              # comprehensive
+  python tabs.py similar "Hotel California" --by chords  # chords only
+  python tabs.py similar "Hotel California" --by embeddings  # lyrics only
   python tabs.py medley "Wish You Were Here" --count 6
   python tabs.py index --rebuild
   python tabs.py enrich --limit 10
+  python tabs.py embed --limit 10
   python tabs.py search "sad songs"
   python tabs.py mood melancholic
         """,
@@ -480,6 +655,8 @@ Examples:
     p_similar = subparsers.add_parser("similar", help="Find similar songs")
     p_similar.add_argument("song", help="Song to find similar matches for")
     p_similar.add_argument("--count", "-n", type=int, default=10, help="Number of results")
+    p_similar.add_argument("--by", "-b", choices=["all", "chords", "embeddings"], default="all",
+                          help="Similarity method: all (comprehensive), chords, or embeddings")
     p_similar.set_defaults(func=cmd_similar)
 
     # index command
@@ -496,6 +673,11 @@ Examples:
     p_enrich = subparsers.add_parser("enrich", help="Enrich tabs with mood/themes via LLM")
     p_enrich.add_argument("--limit", "-l", type=int, help="Limit number of tabs to enrich")
     p_enrich.set_defaults(func=cmd_enrich)
+
+    # embed command (LLM)
+    p_embed = subparsers.add_parser("embed", help="Generate embeddings for lyrical/thematic similarity")
+    p_embed.add_argument("--limit", "-l", type=int, help="Limit number of tabs to embed")
+    p_embed.set_defaults(func=cmd_embed)
 
     # search command (semantic)
     p_search = subparsers.add_parser("search", help="Semantic search by mood/theme/description")

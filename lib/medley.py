@@ -1,61 +1,90 @@
 """
 Medley building logic for creating song sequences.
+
+Uses multiple signals for coherent medleys:
+- Key compatibility (music theory)
+- Chord overlap (playing ease)
+- Mood similarity (emotional arc)
+- Lyrical/thematic similarity via embeddings (narrative coherence)
 """
 
 from . import music
+from . import embeddings as emb_lib
 
 
-def score_transition(song_a: dict, song_b: dict) -> float:
+def score_transition(
+    song_a: dict,
+    song_b: dict,
+    embeddings_data: dict = None,
+) -> float:
     """
     Score how well song_b follows song_a in a medley.
 
     Returns a score from 0.0 to 1.0 where higher is better.
 
-    Factors:
-    - Key compatibility (40%)
-    - Chord overlap (30%)
-    - Mood similarity (20%) - if available
-    - Type match (10%)
+    Factors (with embeddings available):
+    - Key compatibility (30%)
+    - Chord overlap (25%)
+    - Mood similarity (15%)
+    - Lyrical/thematic embeddings (25%)
+    - Type match (5%)
+
+    Without embeddings, mood gets extra weight.
     """
     score = 0.0
+    has_embeddings = embeddings_data is not None and embeddings_data.get("embeddings") is not None
 
-    # Key compatibility (40%)
+    # Key compatibility (30%)
     key_a = song_a.get("key")
     key_b = song_b.get("key")
     capo_a = song_a.get("capo") or 0
     capo_b = song_b.get("capo") or 0
 
-    # Use effective key (accounting for capo)
     eff_key_a = music.effective_key(key_a, capo_a) if key_a else None
     eff_key_b = music.effective_key(key_b, capo_b) if key_b else None
 
     key_score = music.key_compatibility_score(eff_key_a, eff_key_b)
-    score += 0.4 * key_score
+    score += 0.30 * key_score
 
-    # Chord overlap (30%)
+    # Chord overlap (25%)
     chords_a = song_a.get("chords", [])
     chords_b = song_b.get("chords", [])
     chord_score = music.chord_overlap_score(chords_a, chords_b)
-    score += 0.3 * chord_score
+    score += 0.25 * chord_score
 
-    # Mood similarity (20%) - if both have mood data
+    # Mood similarity (15% with embeddings, 25% without)
     moods_a = set(song_a.get("mood") or [])
     moods_b = set(song_b.get("mood") or [])
 
+    mood_weight = 0.15 if has_embeddings else 0.25
+
     if moods_a and moods_b:
         mood_overlap = len(moods_a & moods_b) / len(moods_a | moods_b)
-        score += 0.2 * mood_overlap
+        score += mood_weight * mood_overlap
     else:
-        # No mood data, give neutral score
-        score += 0.1
+        score += mood_weight * 0.5  # Neutral if no mood data
 
-    # Type match (10%) - prefer same type (Chords, Tab, etc.)
+    # Lyrical/thematic similarity via embeddings (25%)
+    if has_embeddings:
+        emb_score = emb_lib.embedding_similarity_score(song_a, song_b, embeddings_data)
+        score += 0.25 * emb_score
+    else:
+        # Without embeddings, distribute weight to themes if available
+        themes_a = set(song_a.get("themes") or [])
+        themes_b = set(song_b.get("themes") or [])
+        if themes_a and themes_b:
+            theme_overlap = len(themes_a & themes_b) / len(themes_a | themes_b)
+            score += 0.15 * theme_overlap
+        else:
+            score += 0.075  # Neutral
+
+    # Type match (5%)
     type_a = song_a.get("type", "")
     type_b = song_b.get("type", "")
     if type_a and type_b and type_a == type_b:
-        score += 0.1
-    else:
         score += 0.05
+    else:
+        score += 0.025
 
     return score
 
@@ -64,6 +93,7 @@ def find_best_next(
     current: dict,
     candidates: list[dict],
     exclude_artists: set[str] = None,
+    embeddings_data: dict = None,
 ) -> list[tuple[dict, float]]:
     """
     Find the best next songs to follow the current song.
@@ -72,6 +102,7 @@ def find_best_next(
         current: The current song
         candidates: List of candidate songs
         exclude_artists: Artists to exclude (for variety)
+        embeddings_data: Embeddings for lyrical similarity
 
     Returns list of (song, score) tuples sorted by score (descending).
     """
@@ -86,7 +117,7 @@ def find_best_next(
         if exclude_artists and candidate.get("artist") in exclude_artists:
             continue
 
-        score = score_transition(current, candidate)
+        score = score_transition(current, candidate, embeddings_data)
         scored.append((candidate, score))
 
     scored.sort(key=lambda x: x[1], reverse=True)
@@ -99,6 +130,7 @@ def build_medley(
     count: int = 5,
     diverse: bool = True,
     mood_filter: str = None,
+    embeddings_data: dict = None,
 ) -> list[dict]:
     """
     Build a medley starting from a seed song.
@@ -109,6 +141,7 @@ def build_medley(
         count: Number of songs in the medley
         diverse: If True, avoid repeating artists
         mood_filter: Only include songs with this mood
+        embeddings_data: Embeddings for lyrical/thematic coherence
 
     Returns ordered list of songs for the medley.
     """
@@ -142,12 +175,13 @@ def build_medley(
             current,
             available,
             exclude_artists=used_artists if diverse else None,
+            embeddings_data=embeddings_data,
         )
 
         if not scored:
             # If no matches with artist exclusion, try without
             if diverse:
-                scored = find_best_next(current, available)
+                scored = find_best_next(current, available, embeddings_data=embeddings_data)
 
         if not scored:
             break
@@ -162,7 +196,11 @@ def build_medley(
     return medley
 
 
-def suggest_transition(song_a: dict, song_b: dict) -> str:
+def suggest_transition(
+    song_a: dict,
+    song_b: dict,
+    embeddings_data: dict = None,
+) -> str:
     """
     Generate a transition suggestion between two songs.
     """
@@ -176,34 +214,44 @@ def suggest_transition(song_a: dict, song_b: dict) -> str:
     # Key transition
     if key_a and key_b:
         if key_a == key_b:
-            suggestions.append(f"Same key ({key_a}) - smooth transition")
+            suggestions.append(f"Same key ({key_a})")
         elif music.are_keys_compatible(key_a, key_b):
-            suggestions.append(f"Compatible keys: {key_a} -> {key_b}")
+            suggestions.append(f"Keys: {key_a} -> {key_b}")
         else:
-            suggestions.append(f"Key change: {key_a} -> {key_b} (may need bridge)")
+            suggestions.append(f"Key change: {key_a} -> {key_b}")
 
     # Capo change
     if capo_a != capo_b:
         if capo_a and capo_b:
-            suggestions.append(f"Move capo from fret {capo_a} to {capo_b}")
+            suggestions.append(f"Capo: {capo_a} -> {capo_b}")
         elif capo_b:
-            suggestions.append(f"Add capo at fret {capo_b}")
+            suggestions.append(f"Add capo {capo_b}")
         elif capo_a:
-            suggestions.append(f"Remove capo (was at fret {capo_a})")
+            suggestions.append(f"Remove capo")
 
-    # Common chords
-    chords_a = set(song_a.get("chords", []))
-    chords_b = set(song_b.get("chords", []))
-    common = chords_a & chords_b
+    # Thematic connection
+    themes_a = set(song_a.get("themes") or [])
+    themes_b = set(song_b.get("themes") or [])
+    common_themes = themes_a & themes_b
+    if common_themes:
+        suggestions.append(f"Theme: {', '.join(list(common_themes)[:2])}")
 
-    if common:
-        common_list = sorted(common)[:4]
-        suggestions.append(f"Common chords: {', '.join(common_list)}")
+    # Lyrical similarity note
+    if embeddings_data and embeddings_data.get("embeddings") is not None:
+        emb_score = emb_lib.embedding_similarity_score(song_a, song_b, embeddings_data)
+        if emb_score > 0.7:
+            suggestions.append("Strong lyrical connection")
+        elif emb_score > 0.55:
+            suggestions.append("Similar themes")
 
-    return " | ".join(suggestions) if suggestions else "No specific transition notes"
+    return " | ".join(suggestions) if suggestions else "Transition"
 
 
-def format_medley(medley: list[dict], show_transitions: bool = True) -> str:
+def format_medley(
+    medley: list[dict],
+    show_transitions: bool = True,
+    embeddings_data: dict = None,
+) -> str:
     """Format a medley for display."""
     lines = []
 
@@ -218,19 +266,24 @@ def format_medley(medley: list[dict], show_transitions: bool = True) -> str:
         if capo:
             details.append(f"Capo: {capo}")
 
+        # Add themes if available
+        themes = song.get("themes")
+        if themes:
+            details.append(f"Themes: {', '.join(themes[:2])}")
+
         line += f" [{', '.join(details)}]"
         lines.append(line)
 
         # Add transition suggestion
         if show_transitions and i < len(medley):
             next_song = medley[i]
-            transition = suggest_transition(song, next_song)
+            transition = suggest_transition(song, next_song, embeddings_data)
             lines.append(f"   -> {transition}")
 
     return "\n".join(lines)
 
 
-def analyze_medley(medley: list[dict]) -> dict:
+def analyze_medley(medley: list[dict], embeddings_data: dict = None) -> dict:
     """Analyze a medley and return statistics."""
     if not medley:
         return {}
@@ -238,22 +291,37 @@ def analyze_medley(medley: list[dict]) -> dict:
     keys = [s.get("key") for s in medley if s.get("key")]
     artists = set(s.get("artist") for s in medley)
     all_chords = set()
+    all_themes = set()
     for s in medley:
         all_chords.update(s.get("chords", []))
+        all_themes.update(s.get("themes") or [])
 
     # Calculate average transition score
     transition_scores = []
     for i in range(len(medley) - 1):
-        score = score_transition(medley[i], medley[i + 1])
+        score = score_transition(medley[i], medley[i + 1], embeddings_data)
         transition_scores.append(score)
 
     avg_score = sum(transition_scores) / len(transition_scores) if transition_scores else 0
+
+    # Calculate thematic coherence
+    thematic_coherence = 0
+    if embeddings_data and embeddings_data.get("embeddings") is not None:
+        emb_scores = []
+        for i in range(len(medley) - 1):
+            emb_scores.append(
+                emb_lib.embedding_similarity_score(medley[i], medley[i + 1], embeddings_data)
+            )
+        if emb_scores:
+            thematic_coherence = sum(emb_scores) / len(emb_scores)
 
     return {
         "song_count": len(medley),
         "unique_artists": len(artists),
         "keys": keys,
         "total_unique_chords": len(all_chords),
+        "themes_covered": list(all_themes),
         "avg_transition_score": avg_score,
+        "thematic_coherence": thematic_coherence,
         "transition_scores": transition_scores,
     }
