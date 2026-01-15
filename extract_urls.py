@@ -21,31 +21,109 @@ def extract_tabs_from_html(html_content: str) -> list[dict]:
     """
     Extract tab information from Ultimate Guitar HTML export.
 
-    Parses each complete tab entry as a unit to keep fields properly correlated.
+    Properly parses the embedded JSON data by:
+    1. Finding the js-store data-content attribute
+    2. Decoding HTML entities to get valid JSON
+    3. Parsing the JSON and extracting tab entries
+
     Uses URL as primary key since it's unique per tab.
     """
-    # Pattern to match a complete tab entry with all fields together
-    # Entry format: "song_name":"...","band_name":"...","song_url":"...","band_url":"...","type":"..."
-    entry_pattern = (
-        r'song_name&quot;:&quot;([^&]+)&quot;,'
-        r'&quot;band_name&quot;:&quot;([^&]+)&quot;,'
-        r'&quot;song_url&quot;:&quot;(https://tabs\.ultimate-guitar\.com/tab/[^&]+)&quot;,'
-        r'&quot;band_url&quot;:[^,]+,'
-        r'&quot;type&quot;:&quot;([^&]+)&quot;'
-    )
+    # Find the js-store data-content attribute which contains the JSON
+    match = re.search(r'class="js-store"[^>]*data-content="([^"]+)"', html_content)
 
-    matches = re.findall(entry_pattern, html_content)
+    if not match:
+        print("Warning: Could not find js-store data. Falling back to regex extraction.")
+        return _fallback_regex_extraction(html_content)
+
+    # Decode HTML entities to get valid JSON
+    json_str = unescape(match.group(1))
+
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"Warning: Failed to parse JSON: {e}. Falling back to regex extraction.")
+        return _fallback_regex_extraction(html_content)
+
+    # Navigate to the tabs data - structure is data.store.page.data.tabs
+    try:
+        tabs_data = data.get("store", {}).get("page", {}).get("data", {}).get("tabs", [])
+    except (KeyError, TypeError):
+        tabs_data = []
+
+    if not tabs_data:
+        # Try alternative path
+        print("Warning: No tabs found at expected path. Searching for tab entries...")
+        return _search_json_for_tabs(data)
 
     # Build dict keyed by URL (primary key) to deduplicate
     tabs_by_url = {}
+    for tab in tabs_data:
+        url = tab.get("song_url", "")
+        if url and url.startswith("https://tabs.ultimate-guitar.com/tab/"):
+            if url not in tabs_by_url:
+                tabs_by_url[url] = {
+                    "url": url,
+                    "song_name": tab.get("song_name", "Unknown"),
+                    "band_name": tab.get("band_name", "Unknown"),
+                    "type": tab.get("type", "Tab"),
+                }
+
+    return list(tabs_by_url.values())
+
+
+def _search_json_for_tabs(data: dict, tabs_found: dict = None) -> list[dict]:
+    """Recursively search JSON structure for tab entries."""
+    if tabs_found is None:
+        tabs_found = {}
+
+    if isinstance(data, dict):
+        # Check if this dict looks like a tab entry
+        if "song_url" in data and "song_name" in data:
+            url = data.get("song_url", "")
+            if url.startswith("https://tabs.ultimate-guitar.com/tab/") and url not in tabs_found:
+                tabs_found[url] = {
+                    "url": url,
+                    "song_name": data.get("song_name", "Unknown"),
+                    "band_name": data.get("band_name", "Unknown"),
+                    "type": data.get("type", "Tab"),
+                }
+        # Recurse into dict values
+        for value in data.values():
+            _search_json_for_tabs(value, tabs_found)
+    elif isinstance(data, list):
+        for item in data:
+            _search_json_for_tabs(item, tabs_found)
+
+    return list(tabs_found.values())
+
+
+def _fallback_regex_extraction(html_content: str) -> list[dict]:
+    """
+    Fallback regex-based extraction if JSON parsing fails.
+    Decodes HTML entities first to handle & in names.
+    """
+    # First decode the entire relevant section
+    decoded = unescape(html_content)
+
+    # Now search for tab entries in decoded content
+    entry_pattern = (
+        r'"song_name":"([^"]+)",'
+        r'"band_name":"([^"]+)",'
+        r'"song_url":"(https://tabs\.ultimate-guitar\.com/tab/[^"]+)",'
+        r'"band_url":"[^"]*",'
+        r'"type":"([^"]+)"'
+    )
+
+    matches = re.findall(entry_pattern, decoded)
+
+    tabs_by_url = {}
     for song_name, band_name, url, tab_type in matches:
-        # URL is unique - use as primary key
         if url not in tabs_by_url:
             tabs_by_url[url] = {
-                "url": unescape(url),
-                "song_name": unescape(song_name),
-                "band_name": unescape(band_name),
-                "type": unescape(tab_type),
+                "url": url,
+                "song_name": song_name,
+                "band_name": band_name,
+                "type": tab_type,
             }
 
     return list(tabs_by_url.values())
