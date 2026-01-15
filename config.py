@@ -61,3 +61,15 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
 ]
+
+# =============================================================================
+# TAB EXPLORATION SETTINGS
+# =============================================================================
+
+# LMStudio API (OpenAI-compatible)
+LMSTUDIO_URL = "http://localhost:1234/v1"
+LMSTUDIO_TIMEOUT = 30
+
+# Index files
+INDEX_FILE = "tab_index.json"
+EMBEDDINGS_FILE = "tab_embeddings.npz"

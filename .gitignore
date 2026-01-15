@@ -23,3 +23,7 @@ venv/
 
 # Source HTML (contains personal data)
 guiltar_tabs.html
+
+# Tab exploration index (generated)
+tab_index.json
+tab_embeddings.npz
