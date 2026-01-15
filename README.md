@@ -69,6 +69,45 @@ python backup_tabs.py --status
 python backup_tabs.py --retry
 ```
 
+## Verification & Recovery
+
+The backup tool includes industrial-grade verification to ensure data integrity.
+
+**Verify all backed up files:**
+```bash
+python backup_tabs.py --verify              # Check integrity of all files
+python backup_tabs.py --verify --verbose    # Show progress for each file
+python backup_tabs.py --verify --fix        # Mark broken files for re-download
+```
+
+**Recovery tools:**
+```bash
+python backup_tabs.py --rebuild-manifest    # Rebuild manifest from files on disk
+python backup_tabs.py --find-orphans        # Find files not tracked in manifest
+python backup_tabs.py --rehash              # Compute hashes for existing files
+```
+
+> **Note:** Run `--rehash` once after upgrading to add integrity tracking to existing backups.
+
+### What Verification Checks
+
+| Check | Description |
+|-------|-------------|
+| File exists | Verifies the file is still on disk |
+| Hash match | SHA-256 hash matches what was recorded at backup time |
+| Structure valid | File has proper header (Song, Artist, URL) and content |
+| URL match | URL in file matches the manifest entry |
+| Size match | File size matches recorded size |
+
+### Recovery Scenarios
+
+| Problem | Solution |
+|---------|----------|
+| File deleted | `--verify --fix` marks for re-download, then `--retry` |
+| File corrupted | `--verify --fix` marks for re-download, then `--retry` |
+| Manifest lost | `--rebuild-manifest` recreates from existing files |
+| Unknown files | `--find-orphans` lists untracked files |
+
 ## Output
 
 Tabs are saved to `tabs/{artist}/{song}.txt`:

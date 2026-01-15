@@ -9,10 +9,20 @@ Usage:
     python backup_tabs.py --sync       # Only download new tabs
     python backup_tabs.py --retry      # Retry failed tabs only
     python backup_tabs.py --status     # Show progress stats
+
+Verification:
+    python backup_tabs.py --verify              # Check all file integrity
+    python backup_tabs.py --verify --fix        # Check and mark broken for re-download
+    python backup_tabs.py --verify --verbose    # Show details for each file
+
+Recovery:
+    python backup_tabs.py --rebuild-manifest    # Rebuild manifest from files on disk
+    python backup_tabs.py --find-orphans        # Find untracked files
 """
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import random
@@ -24,6 +34,9 @@ from pathlib import Path
 from playwright.async_api import async_playwright, Page, BrowserContext
 
 import config
+
+# Manifest version for schema compatibility
+MANIFEST_VERSION = 2
 
 
 # =============================================================================
@@ -85,6 +98,254 @@ def update_tab_status(manifest: dict, url: str, status: str, **kwargs):
         manifest["tabs"][url][key] = value
 
     save_manifest(manifest)
+
+
+# =============================================================================
+# FILE INTEGRITY & VERIFICATION
+# =============================================================================
+
+def compute_file_hash(file_path: Path) -> str:
+    """Compute SHA-256 hash of a file."""
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            sha256.update(chunk)
+    return f"sha256:{sha256.hexdigest()}"
+
+
+def validate_file_structure(file_path: Path) -> tuple[bool, str]:
+    """
+    Validate that a tab file has the expected structure.
+    Returns (is_valid, error_message).
+    """
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except Exception as e:
+        return False, f"Cannot read file: {e}"
+
+    # Check for header fields
+    required_fields = ["Song:", "Artist:", "URL:"]
+    for field in required_fields:
+        if field not in content:
+            return False, f"Missing required field: {field}"
+
+    # Check for separator
+    if "---" not in content:
+        return False, "Missing separator (---)"
+
+    # Check for content after separator
+    parts = content.split("---", 1)
+    if len(parts) < 2 or len(parts[1].strip()) < 10:
+        return False, "Missing or empty tab content after separator"
+
+    return True, ""
+
+
+def extract_url_from_file(file_path: Path) -> str | None:
+    """Extract the URL from a tab file's header."""
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        for line in content.split("\n"):
+            if line.startswith("URL:"):
+                return line[4:].strip()
+    except Exception:
+        pass
+    return None
+
+
+def verify_single_file(url: str, tab_info: dict, tabs_dir: Path) -> dict:
+    """
+    Verify a single backed-up tab file.
+    Returns a dict with verification results.
+    """
+    result = {
+        "url": url,
+        "status": "ok",
+        "issues": [],
+    }
+
+    local_path = tab_info.get("local_path")
+    if not local_path:
+        result["status"] = "missing"
+        result["issues"].append("No local_path in manifest")
+        return result
+
+    file_path = Path(local_path)
+    if not file_path.is_absolute():
+        file_path = tabs_dir.parent / file_path
+
+    # Check 1: File exists
+    if not file_path.exists():
+        result["status"] = "missing"
+        result["issues"].append(f"File not found: {local_path}")
+        return result
+
+    # Check 2: Hash matches (if we have a stored hash)
+    stored_hash = tab_info.get("file_hash")
+    if stored_hash:
+        current_hash = compute_file_hash(file_path)
+        if current_hash != stored_hash:
+            result["status"] = "corrupted"
+            result["issues"].append(f"Hash mismatch: expected {stored_hash[:20]}..., got {current_hash[:20]}...")
+
+    # Check 3: File structure is valid
+    is_valid, error = validate_file_structure(file_path)
+    if not is_valid:
+        result["status"] = "invalid"
+        result["issues"].append(f"Invalid structure: {error}")
+
+    # Check 4: URL in file matches manifest URL
+    file_url = extract_url_from_file(file_path)
+    if file_url and file_url != url:
+        result["status"] = "invalid"
+        result["issues"].append(f"URL mismatch: file has {file_url}")
+
+    # Check 5: File size matches (if stored)
+    stored_size = tab_info.get("file_size")
+    if stored_size:
+        actual_size = file_path.stat().st_size
+        if actual_size != stored_size:
+            if result["status"] == "ok":
+                result["status"] = "corrupted"
+            result["issues"].append(f"Size mismatch: expected {stored_size}, got {actual_size}")
+
+    return result
+
+
+def verify_all_files(manifest: dict, verbose: bool = False) -> dict:
+    """
+    Verify all completed tabs in the manifest.
+    Returns summary statistics and list of issues.
+    """
+    tabs_dir = Path(config.OUTPUT_DIR)
+    completed_tabs = {
+        url: info for url, info in manifest.get("tabs", {}).items()
+        if info.get("status") == "completed"
+    }
+
+    results = {
+        "total": len(completed_tabs),
+        "passed": 0,
+        "missing": 0,
+        "corrupted": 0,
+        "invalid": 0,
+        "issues": [],
+    }
+
+    for i, (url, tab_info) in enumerate(completed_tabs.items(), 1):
+        if verbose:
+            print(f"\r[{i}/{results['total']}] Verifying...", end="", flush=True)
+
+        result = verify_single_file(url, tab_info, tabs_dir)
+
+        if result["status"] == "ok":
+            results["passed"] += 1
+        else:
+            results[result["status"]] += 1
+            results["issues"].append(result)
+
+    if verbose:
+        print()  # Newline after progress
+
+    return results
+
+
+def find_orphan_files(manifest: dict) -> list[Path]:
+    """Find files in tabs/ directory that aren't tracked in manifest."""
+    tabs_dir = Path(config.OUTPUT_DIR)
+    if not tabs_dir.exists():
+        return []
+
+    # Get all tracked paths from manifest
+    tracked_paths = set()
+    for tab_info in manifest.get("tabs", {}).values():
+        local_path = tab_info.get("local_path")
+        if local_path:
+            # Normalize path
+            path = Path(local_path)
+            if not path.is_absolute():
+                path = tabs_dir.parent / path
+            tracked_paths.add(path.resolve())
+
+    # Find all .txt files in tabs directory
+    all_files = set(p.resolve() for p in tabs_dir.glob("**/*.txt"))
+
+    # Orphans are files not in tracked paths
+    orphans = sorted(all_files - tracked_paths)
+    return orphans
+
+
+def rebuild_manifest_from_files() -> dict:
+    """
+    Rebuild manifest from existing tab files on disk.
+    Useful for recovery if manifest is lost/corrupted.
+    """
+    tabs_dir = Path(config.OUTPUT_DIR)
+    if not tabs_dir.exists():
+        logger.error(f"Tabs directory not found: {tabs_dir}")
+        return {"version": MANIFEST_VERSION, "tabs": {}}
+
+    manifest = {
+        "version": MANIFEST_VERSION,
+        "last_sync": None,
+        "rebuilt_at": datetime.now().isoformat(),
+        "tabs": {},
+    }
+
+    files = list(tabs_dir.glob("**/*.txt"))
+    logger.info(f"Found {len(files)} tab files to process...")
+
+    for i, file_path in enumerate(files, 1):
+        if i % 50 == 0:
+            logger.info(f"Processing file {i}/{len(files)}...")
+
+        # Extract URL from file header
+        url = extract_url_from_file(file_path)
+        if not url:
+            logger.warning(f"Could not extract URL from: {file_path}")
+            continue
+
+        # Validate structure
+        is_valid, error = validate_file_structure(file_path)
+        if not is_valid:
+            logger.warning(f"Invalid file structure in {file_path}: {error}")
+
+        # Extract metadata from header
+        try:
+            content = file_path.read_text(encoding="utf-8")
+            metadata = {}
+            for line in content.split("\n"):
+                if line.startswith("Song:"):
+                    metadata["song"] = line[5:].strip()
+                elif line.startswith("Artist:"):
+                    metadata["artist"] = line[7:].strip()
+                elif line.startswith("Type:"):
+                    metadata["type"] = line[5:].strip()
+                elif line.startswith("Backed up:"):
+                    metadata["backed_up_at"] = line[10:].strip()
+                elif line.startswith("---"):
+                    break
+        except Exception as e:
+            logger.warning(f"Error reading metadata from {file_path}: {e}")
+            metadata = {}
+
+        # Compute hash
+        file_hash = compute_file_hash(file_path)
+        file_size = file_path.stat().st_size
+
+        # Add to manifest
+        manifest["tabs"][url] = {
+            "status": "completed",
+            "local_path": str(file_path),
+            "file_hash": file_hash,
+            "file_size": file_size,
+            "song": metadata.get("song", "Unknown"),
+            "artist": metadata.get("artist", "Unknown"),
+            "rebuilt": True,
+        }
+
+    logger.info(f"Rebuilt manifest with {len(manifest['tabs'])} tabs")
+    return manifest
 
 
 # =============================================================================
@@ -178,8 +439,12 @@ def sanitize_filename(name: str) -> str:
     return name[:100]  # Limit length
 
 
-def save_tab_file(tab_data: dict, tab_info: dict) -> Path:
-    """Save tab content to a text file."""
+def save_tab_file(tab_data: dict, tab_info: dict) -> tuple[Path, str, int]:
+    """
+    Save tab content to a text file using atomic writes.
+
+    Returns (file_path, file_hash, file_size).
+    """
     artist_dir = sanitize_filename(tab_data["artist"] or tab_info["band_name"])
     song_name = sanitize_filename(tab_data["title"] or tab_info["song_name"])
 
@@ -187,8 +452,9 @@ def save_tab_file(tab_data: dict, tab_info: dict) -> Path:
     output_dir = Path(config.OUTPUT_DIR) / artist_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create file
+    # Target file path
     file_path = output_dir / f"{song_name}.txt"
+    temp_path = file_path.with_suffix(".txt.tmp")
 
     # Build file content with metadata header
     header = f"""Song: {tab_data['title'] or tab_info['song_name']}
@@ -203,9 +469,22 @@ Backed up: {datetime.now().strftime('%Y-%m-%d %H:%M')}
     header += "\n---\n\n"
 
     file_content = header + tab_data["content"]
-    file_path.write_text(file_content, encoding="utf-8")
 
-    return file_path
+    # Atomic write: write to temp file first, then rename
+    try:
+        temp_path.write_text(file_content, encoding="utf-8")
+        temp_path.rename(file_path)
+    except Exception:
+        # Clean up temp file if rename fails
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+
+    # Compute hash and size for integrity tracking
+    file_hash = compute_file_hash(file_path)
+    file_size = file_path.stat().st_size
+
+    return file_path, file_hash, file_size
 
 
 # =============================================================================
@@ -241,16 +520,18 @@ async def backup_single_tab(
         if not tab_data or not tab_data.get("content"):
             raise Exception("Failed to extract tab content")
 
-        # Save to file
-        file_path = save_tab_file(tab_data, tab_info)
+        # Save to file (atomic write with hash computation)
+        file_path, file_hash, file_size = save_tab_file(tab_data, tab_info)
 
-        # Update manifest
+        # Update manifest with integrity info
         update_tab_status(
             manifest,
             url,
             status="completed",
             backed_up_at=datetime.now().isoformat(),
             local_path=str(file_path),
+            file_hash=file_hash,
+            file_size=file_size,
             artist=tab_info["band_name"],
             song=tab_info["song_name"],
         )
@@ -399,15 +680,19 @@ async def run_backup(
 
 
 def show_status(tabs: list[dict], manifest: dict):
-    """Show current backup status."""
+    """Show current backup status with integrity information."""
     completed = 0
     failed = 0
     pending = 0
+    with_hash = 0
 
     for tab in tabs:
-        status = manifest["tabs"].get(tab["url"], {}).get("status")
+        tab_info = manifest["tabs"].get(tab["url"], {})
+        status = tab_info.get("status")
         if status == "completed":
             completed += 1
+            if tab_info.get("file_hash"):
+                with_hash += 1
         elif status == "failed":
             failed += 1
         else:
@@ -422,6 +707,14 @@ def show_status(tabs: list[dict], manifest: dict):
     print(f"Completed:   {completed} ({100*completed/total:.1f}%)")
     print(f"Failed:      {failed}")
     print(f"Pending:     {pending}")
+    print("-" * 50)
+    print("INTEGRITY TRACKING")
+    print("-" * 50)
+    print(f"With hash:   {with_hash}/{completed} completed tabs")
+    if manifest.get("last_verify"):
+        print(f"Last verify: {manifest['last_verify']}")
+    else:
+        print("Last verify: Never")
     print("=" * 50)
 
     if manifest.get("last_sync"):
@@ -432,6 +725,169 @@ def show_status(tabs: list[dict], manifest: dict):
 
     if pending > 0:
         print(f"To continue backup:   python backup_tabs.py")
+
+    if completed > 0:
+        print(f"To verify integrity:  python backup_tabs.py --verify")
+
+
+# =============================================================================
+# VERIFICATION COMMANDS
+# =============================================================================
+
+def run_verify(manifest: dict, fix: bool = False, verbose: bool = False):
+    """Run verification on all completed tabs."""
+    print("\nVerifying completed tabs...")
+
+    results = verify_all_files(manifest, verbose=verbose)
+
+    print("\n" + "=" * 50)
+    print("VERIFICATION COMPLETE")
+    print("=" * 50)
+    print(f"Total checked:  {results['total']}")
+    print(f"Passed:         {results['passed']} ({100*results['passed']/max(results['total'],1):.1f}%)")
+    print(f"Missing:        {results['missing']}")
+    print(f"Corrupted:      {results['corrupted']}")
+    print(f"Invalid:        {results['invalid']}")
+    print("=" * 50)
+
+    # Show issues
+    if results["issues"]:
+        print("\nIssues found:")
+        for issue in results["issues"]:
+            status = issue["status"].upper()
+            url = issue["url"]
+            # Get song info from manifest
+            tab_info = manifest["tabs"].get(url, {})
+            song = tab_info.get("song", "Unknown")
+            artist = tab_info.get("artist", "Unknown")
+            print(f"  {status}: {artist} - {song}")
+            for problem in issue["issues"]:
+                print(f"      {problem}")
+
+        if fix:
+            print("\nMarking broken files for re-download...")
+            for issue in results["issues"]:
+                url = issue["url"]
+                update_tab_status(
+                    manifest,
+                    url,
+                    status="failed",
+                    error=f"Verification failed: {issue['status']}",
+                    needs_redownload=True,
+                )
+            print(f"Marked {len(results['issues'])} tabs for re-download.")
+            print("Run 'python backup_tabs.py --retry' to re-download them.")
+        else:
+            print("\nRun with --fix to mark broken files for re-download.")
+    else:
+        print("\nAll files passed verification!")
+
+    # Update manifest with verification timestamp
+    manifest["last_verify"] = datetime.now().isoformat()
+    save_manifest(manifest)
+
+
+def run_rebuild_manifest():
+    """Rebuild manifest from files on disk."""
+    print("\nRebuilding manifest from files on disk...")
+    print("This will create a new manifest based on existing tab files.\n")
+
+    # Check if manifest already exists
+    manifest_path = Path(config.MANIFEST_FILE)
+    if manifest_path.exists():
+        response = input("Existing manifest found. Overwrite? [y/N] ")
+        if response.lower() != "y":
+            print("Aborted.")
+            return
+
+    manifest = rebuild_manifest_from_files()
+
+    # Save the rebuilt manifest
+    save_manifest(manifest)
+
+    print(f"\nManifest rebuilt successfully!")
+    print(f"Found {len(manifest['tabs'])} tabs in {config.OUTPUT_DIR}/")
+
+
+def run_rehash(manifest: dict):
+    """Compute and store hashes for all completed files that don't have them."""
+    print("\nComputing hashes for existing files...")
+
+    tabs_dir = Path(config.OUTPUT_DIR)
+    updated = 0
+    skipped = 0
+    missing = 0
+
+    completed_tabs = {
+        url: info for url, info in manifest.get("tabs", {}).items()
+        if info.get("status") == "completed"
+    }
+
+    total = len(completed_tabs)
+    for i, (url, tab_info) in enumerate(completed_tabs.items(), 1):
+        if i % 50 == 0 or i == total:
+            print(f"\r[{i}/{total}] Processing...", end="", flush=True)
+
+        # Skip if already has hash
+        if tab_info.get("file_hash"):
+            skipped += 1
+            continue
+
+        local_path = tab_info.get("local_path")
+        if not local_path:
+            missing += 1
+            continue
+
+        file_path = Path(local_path)
+        if not file_path.is_absolute():
+            file_path = tabs_dir.parent / file_path
+
+        if not file_path.exists():
+            missing += 1
+            continue
+
+        # Compute hash and size
+        file_hash = compute_file_hash(file_path)
+        file_size = file_path.stat().st_size
+
+        # Update manifest entry
+        tab_info["file_hash"] = file_hash
+        tab_info["file_size"] = file_size
+        updated += 1
+
+    print()  # Newline after progress
+
+    # Save updated manifest
+    save_manifest(manifest)
+
+    print(f"\nRehashing complete!")
+    print(f"  Updated:  {updated}")
+    print(f"  Skipped:  {skipped} (already had hash)")
+    print(f"  Missing:  {missing} (file not found)")
+
+
+def run_find_orphans(manifest: dict):
+    """Find files not tracked in manifest."""
+    print("\nSearching for orphan files...")
+
+    orphans = find_orphan_files(manifest)
+
+    if not orphans:
+        print("No orphan files found. All files are tracked in manifest.")
+        return
+
+    print(f"\nFound {len(orphans)} orphan file(s) not tracked in manifest:\n")
+    for orphan in orphans:
+        print(f"  {orphan}")
+
+    print("\nThese files exist on disk but are not in the backup manifest.")
+    print("They may be:")
+    print("  - Manually added files")
+    print("  - Files from a previous backup with lost manifest")
+    print("  - Remnants from interrupted operations")
+    print("\nOptions:")
+    print("  - Run --rebuild-manifest to create a fresh manifest including these files")
+    print("  - Manually delete them if they're not needed")
 
 
 # =============================================================================
@@ -448,8 +904,19 @@ Examples:
   python backup_tabs.py --sync       # Only download new tabs
   python backup_tabs.py --retry      # Retry failed tabs only
   python backup_tabs.py --status     # Show progress stats
+
+Verification:
+  python backup_tabs.py --verify              # Check all file integrity
+  python backup_tabs.py --verify --fix        # Check and mark broken for re-download
+  python backup_tabs.py --verify --verbose    # Show details for each file
+
+Recovery:
+  python backup_tabs.py --rebuild-manifest    # Rebuild manifest from files on disk
+  python backup_tabs.py --find-orphans        # Find untracked files
         """,
     )
+
+    # Backup modes
     parser.add_argument(
         "--sync",
         action="store_true",
@@ -466,11 +933,67 @@ Examples:
         help="Show current backup status",
     )
 
+    # Verification
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Verify integrity of all backed up files",
+    )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="With --verify: mark broken files for re-download",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Show detailed output",
+    )
+
+    # Recovery
+    parser.add_argument(
+        "--rebuild-manifest",
+        action="store_true",
+        help="Rebuild manifest from files on disk (recovery)",
+    )
+    parser.add_argument(
+        "--find-orphans",
+        action="store_true",
+        help="Find files not tracked in manifest",
+    )
+    parser.add_argument(
+        "--rehash",
+        action="store_true",
+        help="Compute hashes for existing files (run once after upgrade)",
+    )
+
     args = parser.parse_args()
 
-    # Load data
-    tabs = load_tab_urls()
+    # Handle rebuild-manifest first (doesn't need tab URLs)
+    if args.rebuild_manifest:
+        run_rebuild_manifest()
+        return
+
+    # Load manifest (needed for most operations)
     manifest = load_manifest()
+
+    # Handle find-orphans (doesn't need tab URLs)
+    if args.find_orphans:
+        run_find_orphans(manifest)
+        return
+
+    # Handle rehash (doesn't need tab URLs)
+    if args.rehash:
+        run_rehash(manifest)
+        return
+
+    # Handle verify (doesn't need tab URLs)
+    if args.verify:
+        run_verify(manifest, fix=args.fix, verbose=args.verbose)
+        return
+
+    # Load tab URLs (needed for remaining operations)
+    tabs = load_tab_urls()
 
     if args.status:
         show_status(tabs, manifest)

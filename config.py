@@ -4,6 +4,11 @@ Adjust these values if you experience rate limiting or want to change paths.
 """
 
 # =============================================================================
+# MANIFEST SCHEMA VERSION
+# =============================================================================
+MANIFEST_VERSION = 2  # Incremented when manifest schema changes
+
+# =============================================================================
 # TIMING SETTINGS (Anti-blocking)
 # =============================================================================
 
