@@ -19,6 +19,8 @@ import config
 from lib import index as tab_index
 from lib import search
 from lib import parser
+from lib import llm
+from lib import medley as medley_lib
 
 
 def ensure_index(rebuild: bool = False) -> dict:
@@ -189,6 +191,230 @@ def cmd_stats(args):
     cmd_index(args)
 
 
+def cmd_enrich(args):
+    """Enrich tabs with LLM-generated mood, themes, and tempo."""
+    idx = ensure_index()
+
+    # Check LMStudio availability
+    try:
+        client = llm.require_client()
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        return
+
+    print("LMStudio connected!")
+    models = client.get_models()
+    if models:
+        print(f"Available models: {', '.join(models)}")
+
+    # Find tabs that need enrichment
+    tabs_to_enrich = []
+    for file_path, tab in idx.get("tabs", {}).items():
+        if not tab.get("mood"):  # Not yet enriched
+            tabs_to_enrich.append((file_path, tab))
+
+    if not tabs_to_enrich:
+        print("\nAll tabs are already enriched!")
+        return
+
+    if args.limit:
+        tabs_to_enrich = tabs_to_enrich[:args.limit]
+
+    print(f"\nEnriching {len(tabs_to_enrich)} tabs...")
+
+    enriched = 0
+    failed = 0
+
+    for i, (file_path, tab) in enumerate(tabs_to_enrich, 1):
+        song = tab.get("song", "Unknown")
+        artist = tab.get("artist", "Unknown")
+
+        print(f"[{i}/{len(tabs_to_enrich)}] {artist} - {song}...", end=" ", flush=True)
+
+        try:
+            # Read tab content
+            content = Path(file_path).read_text(encoding="utf-8")
+
+            # Analyze with LLM
+            analysis = client.analyze_tab(content, song, artist)
+
+            # Update index entry
+            tab["mood"] = analysis.get("mood", [])
+            tab["themes"] = analysis.get("themes", [])
+            tab["tempo_feel"] = analysis.get("tempo_feel", "medium")
+            tab["description"] = analysis.get("description", "")
+
+            print(f"mood={analysis['mood']}, themes={analysis['themes']}")
+            enriched += 1
+
+        except Exception as e:
+            print(f"FAILED: {e}")
+            failed += 1
+
+    # Save updated index
+    tab_index.save_index(idx, Path(config.INDEX_FILE))
+
+    print(f"\nEnrichment complete!")
+    print(f"  Enriched: {enriched}")
+    print(f"  Failed: {failed}")
+
+
+def cmd_search(args):
+    """Semantic search using LLM (searches mood, themes, description)."""
+    idx = ensure_index()
+
+    query = args.query.lower()
+
+    # First try mood/theme search on enriched data
+    results = []
+
+    for tab in idx.get("tabs", {}).values():
+        score = 0
+
+        # Check mood
+        moods = tab.get("mood") or []
+        for mood in moods:
+            if query in mood.lower():
+                score += 2
+
+        # Check themes
+        themes = tab.get("themes") or []
+        for theme in themes:
+            if query in theme.lower():
+                score += 2
+
+        # Check description
+        description = tab.get("description") or ""
+        if query in description.lower():
+            score += 1
+
+        # Check song/artist as fallback
+        if query in tab.get("song", "").lower():
+            score += 1
+        if query in tab.get("artist", "").lower():
+            score += 0.5
+
+        if score > 0:
+            results.append((tab, score))
+
+    if not results:
+        # Check if any tabs are enriched
+        enriched_count = sum(1 for t in idx.get("tabs", {}).values() if t.get("mood"))
+        if enriched_count == 0:
+            print("No tabs have been enriched yet.")
+            print("Run 'python tabs.py enrich' first to add mood/theme data.")
+        else:
+            print(f"No results found for: {args.query}")
+        return
+
+    # Sort by score
+    results.sort(key=lambda x: x[1], reverse=True)
+
+    print(f"\nSearch results for '{args.query}':\n")
+
+    for i, (tab, score) in enumerate(results[:args.count], 1):
+        mood_str = ", ".join(tab.get("mood", [])) or "N/A"
+        themes_str = ", ".join(tab.get("themes", [])) or "N/A"
+        print(f"  {i}. {search.format_result(tab)}")
+        print(f"      Mood: {mood_str} | Themes: {themes_str}")
+        if tab.get("description"):
+            print(f"      {tab['description']}")
+
+
+def cmd_mood(args):
+    """Find tabs by mood."""
+    idx = ensure_index()
+
+    results = search.search_by_mood(idx, args.mood)
+
+    if not results:
+        print(f"No tabs found with mood: {args.mood}")
+        print("\nAvailable moods in your collection:")
+        moods = set()
+        for tab in idx.get("tabs", {}).values():
+            moods.update(tab.get("mood") or [])
+        if moods:
+            print(f"  {', '.join(sorted(moods))}")
+        else:
+            print("  (No tabs enriched yet - run 'python tabs.py enrich')")
+        return
+
+    print(f"\nTabs with mood '{args.mood}' ({len(results)} found):\n")
+    for tab in sorted(results, key=lambda x: (x.get("artist", ""), x.get("song", ""))):
+        print(f"  {search.format_result(tab)}")
+
+
+def cmd_theme(args):
+    """Find tabs by theme."""
+    idx = ensure_index()
+
+    results = search.search_by_theme(idx, args.theme)
+
+    if not results:
+        print(f"No tabs found with theme: {args.theme}")
+        print("\nAvailable themes in your collection:")
+        themes = set()
+        for tab in idx.get("tabs", {}).values():
+            themes.update(tab.get("themes") or [])
+        if themes:
+            print(f"  {', '.join(sorted(themes))}")
+        else:
+            print("  (No tabs enriched yet - run 'python tabs.py enrich')")
+        return
+
+    print(f"\nTabs with theme '{args.theme}' ({len(results)} found):\n")
+    for tab in sorted(results, key=lambda x: (x.get("artist", ""), x.get("song", ""))):
+        print(f"  {search.format_result(tab)}")
+
+
+def cmd_medley(args):
+    """Build a medley starting from a seed song."""
+    idx = ensure_index()
+
+    # Find the seed song
+    seed = tab_index.find_tab_by_name(idx, args.song)
+
+    if not seed:
+        print(f"Song not found: {args.song}")
+        print("\nTry searching with: python tabs.py find --song \"partial name\"")
+        return
+
+    print(f"\nBuilding medley starting from: {seed.get('artist')} - {seed.get('song')}")
+
+    # Get all songs
+    all_songs = list(idx.get("tabs", {}).values())
+
+    # Build the medley
+    medley = medley_lib.build_medley(
+        start_song=seed,
+        all_songs=all_songs,
+        count=args.count,
+        diverse=not args.same_artist,
+        mood_filter=args.mood,
+    )
+
+    if len(medley) < 2:
+        print("Could not build a medley (not enough compatible songs)")
+        return
+
+    # Display the medley
+    print(f"\n{'='*60}")
+    print(f"MEDLEY ({len(medley)} songs)")
+    print(f"{'='*60}\n")
+
+    print(medley_lib.format_medley(medley, show_transitions=True))
+
+    # Show analysis
+    stats = medley_lib.analyze_medley(medley)
+    print(f"\n{'-'*60}")
+    print("MEDLEY ANALYSIS")
+    print(f"{'-'*60}")
+    print(f"Unique artists: {stats['unique_artists']}")
+    print(f"Total unique chords: {stats['total_unique_chords']}")
+    print(f"Avg transition score: {stats['avg_transition_score']:.1%}")
+    print(f"Keys: {' -> '.join(stats['keys'])}")
+
+
 def main():
     parser_main = argparse.ArgumentParser(
         description="Guitar Tab Exploration Tool",
@@ -202,12 +428,25 @@ Commands:
   similar   Find songs with similar chord progressions
   index     Build or show index statistics
 
+LLM-powered (requires LMStudio):
+  enrich    Analyze tabs for mood, themes, tempo
+  search    Semantic search by mood/theme
+  mood      Find tabs by mood
+  theme     Find tabs by theme
+
+Medley building:
+  medley    Build a medley from a seed song
+
 Examples:
   python tabs.py list --artist "Pink Floyd"
   python tabs.py find --chord "Am,G,C" --type Chords
   python tabs.py chords "Wish You Were Here"
   python tabs.py similar "Hotel California" --count 10
+  python tabs.py medley "Wish You Were Here" --count 6
   python tabs.py index --rebuild
+  python tabs.py enrich --limit 10
+  python tabs.py search "sad songs"
+  python tabs.py mood melancholic
         """,
     )
 
@@ -252,6 +491,35 @@ Examples:
     p_stats = subparsers.add_parser("stats", help="Show collection statistics")
     p_stats.add_argument("--rebuild", "-r", action="store_true", help="Force rebuild")
     p_stats.set_defaults(func=cmd_stats)
+
+    # enrich command (LLM)
+    p_enrich = subparsers.add_parser("enrich", help="Enrich tabs with mood/themes via LLM")
+    p_enrich.add_argument("--limit", "-l", type=int, help="Limit number of tabs to enrich")
+    p_enrich.set_defaults(func=cmd_enrich)
+
+    # search command (semantic)
+    p_search = subparsers.add_parser("search", help="Semantic search by mood/theme/description")
+    p_search.add_argument("query", help="Search query (e.g., 'sad', 'love', 'upbeat')")
+    p_search.add_argument("--count", "-n", type=int, default=10, help="Number of results")
+    p_search.set_defaults(func=cmd_search)
+
+    # mood command
+    p_mood = subparsers.add_parser("mood", help="Find tabs by mood")
+    p_mood.add_argument("mood", help="Mood to search for (e.g., 'melancholic', 'upbeat')")
+    p_mood.set_defaults(func=cmd_mood)
+
+    # theme command
+    p_theme = subparsers.add_parser("theme", help="Find tabs by theme")
+    p_theme.add_argument("theme", help="Theme to search for (e.g., 'love', 'loss', 'travel')")
+    p_theme.set_defaults(func=cmd_theme)
+
+    # medley command
+    p_medley = subparsers.add_parser("medley", help="Build a medley from a seed song")
+    p_medley.add_argument("song", help="Seed song to start the medley")
+    p_medley.add_argument("--count", "-n", type=int, default=5, help="Number of songs")
+    p_medley.add_argument("--mood", "-m", help="Filter by mood")
+    p_medley.add_argument("--same-artist", action="store_true", help="Allow same artist")
+    p_medley.set_defaults(func=cmd_medley)
 
     args = parser_main.parse_args()
 
