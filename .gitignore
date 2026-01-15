@@ -1,0 +1,25 @@
+# Backed up tabs (large, personal data)
+tabs/
+
+# Generated files
+tab_urls.json
+backup_manifest.json
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Source HTML (contains personal data)
+guiltar_tabs.html
