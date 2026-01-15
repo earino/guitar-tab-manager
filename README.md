@@ -1,187 +1,302 @@
-# Ultimate Guitar Tab Backup Tool
+# Guitar Tab Manager
 
-A tool to backup your saved tabs from Ultimate Guitar to local text files.
+A complete system for backing up, exploring, and building setlists from your Ultimate Guitar tab collection. Features intelligent similarity matching and AI-powered medley building with thematic coherence.
 
-## Setup
+## Features
 
-### Prerequisites
-- Python 3.9+
-- A browser (Chromium will be installed automatically)
+### Backup & Sync
+- Download all your saved tabs from Ultimate Guitar
+- Resume interrupted backups automatically
+- SHA-256 verification and integrity checking
+- Incremental sync for new tabs
+
+### Exploration & Search
+- **Text search**: Find tabs by artist, song, chord, key, type
+- **Semantic search**: Search by mood ("sad songs") or theme ("songs about travel")
+- **Chord analysis**: See all chords used in any song
+
+### Similarity Matching
+- **Comprehensive similarity**: Combines key compatibility, chord overlap, mood, themes, and lyrical content
+- **Chord-based**: Find songs with similar chord progressions
+- **Lyrical/thematic**: Find songs with similar meaning via embeddings
+
+### Medley Building
+Build coherent setlists that flow naturally:
+- **Key compatibility** (30%): Smooth musical transitions
+- **Chord overlap** (25%): Easy to play in sequence
+- **Mood similarity** (15%): Consistent emotional arc
+- **Lyrical coherence** (25%): Narrative makes sense
+- **Type matching** (5%): Similar tab formats
+
+## Quick Start
 
 ### Installation
 
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   playwright install chromium
-   ```
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
 
-## Usage
-
-### Step 1: Export Your Tabs from Ultimate Guitar
+### Backup Your Tabs
 
 1. Go to https://www.ultimate-guitar.com/user/mytabs
-2. Log in to your account
-3. Save the page as HTML: File → Save Page As → `guiltar_tabs.html`
-4. Place the file in this folder
-
-### Step 2: Extract Tab URLs
-
-```bash
-python extract_urls.py
-```
-
-This creates `tab_urls.json` with all your saved tab URLs.
-
-### Step 3: Run the Backup
-
-**First time (full backup):**
+2. Save the page as HTML: `guiltar_tabs.html`
+3. Run:
 ```bash
 python backup_tabs.py
 ```
 
-A browser window will open. You may need to:
-- Log in to Ultimate Guitar (if tabs require authentication)
-- Dismiss cookie/privacy dialogs
-- Press Enter in the terminal when ready
+### Explore Your Collection
 
-The script will then download all tabs with progress updates.
-
-**Resume an interrupted backup:**
 ```bash
-python backup_tabs.py
-```
-Just run the same command - it automatically skips completed tabs.
+# Build the search index
+python tabs.py index
 
-**Sync new tabs (after adding more favorites):**
+# List all artists
+python tabs.py artists
+
+# Find tabs by criteria
+python tabs.py find --artist "Beatles" --chord "Am,G"
+python tabs.py find --key "Am" --type Chords
+
+# View chords for a song
+python tabs.py chords "Hotel California"
+```
+
+### Find Similar Songs
+
 ```bash
-# First, re-export guiltar_tabs.html from the website
-python backup_tabs.py --sync
+# Comprehensive similarity (all signals)
+python tabs.py similar "Hallelujah"
+
+# Just chord similarity
+python tabs.py similar "Hallelujah" --by chords
+
+# Just lyrical/thematic similarity
+python tabs.py similar "Hallelujah" --by embeddings
 ```
 
-**Check status:**
+### Build Medleys
+
 ```bash
-python backup_tabs.py --status
+# Build a 6-song medley
+python tabs.py medley "Wish You Were Here" --count 6
+
+# Filter by mood
+python tabs.py medley "Yesterday" --mood melancholic
 ```
 
-**Retry failed downloads:**
+## LLM-Powered Features (requires LMStudio)
+
+For semantic search and thematic medleys, you need [LMStudio](https://lmstudio.ai/) running locally.
+
+### Setup LMStudio
+
+1. Download and install LMStudio
+2. Load a chat model (e.g., `qwen3-30b`)
+3. Load an embedding model (e.g., `text-embedding-nomic-embed-text-v1.5`)
+4. Enable the local server (Settings > Local Server)
+
+### Enrich Your Tabs
+
+Analyze all tabs for mood, themes, and tempo:
+
 ```bash
-python backup_tabs.py --retry
+python tabs.py enrich
 ```
 
-## Verification & Recovery
+This adds metadata like:
+- **Mood**: melancholic, uplifting, nostalgic, energetic
+- **Themes**: love, loss, travel, freedom, rebellion
+- **Tempo feel**: slow, medium, fast
 
-The backup tool includes industrial-grade verification to ensure data integrity.
+### Generate Embeddings
 
-**Verify all backed up files:**
+Create vector embeddings for lyrical/thematic similarity:
+
 ```bash
-python backup_tabs.py --verify              # Check integrity of all files
-python backup_tabs.py --verify --verbose    # Show progress for each file
-python backup_tabs.py --verify --fix        # Mark broken files for re-download
+python tabs.py embed
 ```
 
-**Recovery tools:**
+Embeddings capture the semantic meaning of each song's:
+- Artist and title
+- Mood and themes (if enriched)
+- Actual lyrics
+
+### Search by Meaning
+
 ```bash
-python backup_tabs.py --rebuild-manifest    # Rebuild manifest from files on disk
-python backup_tabs.py --find-orphans        # Find files not tracked in manifest
-python backup_tabs.py --rehash              # Compute hashes for existing files
+python tabs.py search "sad songs about heartbreak"
+python tabs.py mood melancholic
+python tabs.py theme "lost love"
 ```
 
-> **Note:** Run `--rehash` once after upgrading to add integrity tracking to existing backups.
+## Example Output
 
-### What Verification Checks
-
-| Check | Description |
-|-------|-------------|
-| File exists | Verifies the file is still on disk |
-| Hash match | SHA-256 hash matches what was recorded at backup time |
-| Structure valid | File has proper header (Song, Artist, URL) and content |
-| URL match | URL in file matches the manifest entry |
-| Size match | File size matches recorded size |
-
-### Recovery Scenarios
-
-| Problem | Solution |
-|---------|----------|
-| File deleted | `--verify --fix` marks for re-download, then `--retry` |
-| File corrupted | `--verify --fix` marks for re-download, then `--retry` |
-| Manifest lost | `--rebuild-manifest` recreates from existing files |
-| Unknown files | `--find-orphans` lists untracked files |
-
-## Output
-
-Tabs are saved to `tabs/{artist}/{song}.txt`:
+### Similarity Search
 
 ```
-tabs/
-├── counting-crows/
-│   └── mr-jones.txt
-├── black-sabbath/
-│   └── changes.txt
-└── ...
+Finding songs similar to: Jeff Buckley - Hallelujah Chords
+(Based on lyrical/thematic similarity via embeddings)
+
+  1. Led Zeppelin - Stairway To Heaven - 70% similar
+      Themes: spiritual journey, love
+  2. Johnny Cash - Hurt - 68% similar
+      Themes: self-destruction, regret
+  3. Simon & Garfunkel - Bridge Over Troubled Water - 66% similar
+      Themes: support, comfort
+  4. Eric Clapton - Tears In Heaven - 65% similar
+      Themes: loss, grief
 ```
 
-Each file contains:
-```
-Song: Mr Jones
-Artist: Counting Crows
-Type: Chords
-URL: https://tabs.ultimate-guitar.com/...
-Backed up: 2026-01-15
+### Medley Building
 
----
-
-[Intro]
-Am F Dm G
-...
 ```
+Building medley starting from: Jeff Buckley - Hallelujah Chords
+Using embeddings for thematic coherence (374 songs)
+
+============================================================
+MEDLEY (6 songs)
+============================================================
+
+1. Jeff Buckley - Hallelujah Chords [Key: Am, Themes: love, faith]
+   -> Same key (Am) | Strong lyrical connection
+2. Live - Lightning Crashes Chords [Key: Am, Themes: birth and death]
+   -> Same key (Am) | Strong lyrical connection
+3. Simon & Garfunkel - Sound of Silence [Key: Am, Themes: isolation]
+   -> Same key (Am) | Strong lyrical connection
+4. The Beatles - Let It Be [Key: Am, Themes: spiritual comfort]
+   ...
+
+------------------------------------------------------------
+MEDLEY ANALYSIS
+------------------------------------------------------------
+Unique artists: 6
+Avg transition score: 82.4%
+Thematic coherence: 78.1%
+Themes: love, faith, isolation, comfort, hope
+Keys: Am -> Am -> Am -> Am -> C -> C
+```
+
+## Command Reference
+
+### Backup Commands
+
+| Command | Description |
+|---------|-------------|
+| `python backup_tabs.py` | Run/resume backup |
+| `python backup_tabs.py --sync` | Sync new tabs |
+| `python backup_tabs.py --status` | Show backup status |
+| `python backup_tabs.py --retry` | Retry failed tabs |
+| `python backup_tabs.py --verify` | Verify file integrity |
+
+### Exploration Commands
+
+| Command | Description |
+|---------|-------------|
+| `python tabs.py list` | List all tabs |
+| `python tabs.py artists` | List all artists |
+| `python tabs.py find` | Search with filters |
+| `python tabs.py chords "song"` | Show chords for a song |
+| `python tabs.py similar "song"` | Find similar songs |
+| `python tabs.py index` | Show collection stats |
+
+### LLM Commands
+
+| Command | Description |
+|---------|-------------|
+| `python tabs.py enrich` | Add mood/themes via LLM |
+| `python tabs.py embed` | Generate embeddings |
+| `python tabs.py search "query"` | Semantic search |
+| `python tabs.py mood "mood"` | Find by mood |
+| `python tabs.py theme "theme"` | Find by theme |
+| `python tabs.py medley "song"` | Build a medley |
 
 ## Configuration
 
-Edit `config.py` to adjust:
+Edit `config.py`:
 
 ```python
-# Timing (increase if getting rate limited)
-MIN_DELAY = 5          # Min seconds between requests
-MAX_DELAY = 15         # Max seconds between requests
-BATCH_SIZE = 20        # Tabs before taking a break
-BATCH_PAUSE = 60       # Break duration in seconds
+# Backup timing
+MIN_DELAY = 5           # Seconds between requests
+MAX_DELAY = 15
+BATCH_SIZE = 20         # Tabs before pause
+BATCH_PAUSE = 60        # Pause duration
+
+# LMStudio
+LMSTUDIO_URL = "http://localhost:1234/v1"
+LMSTUDIO_TIMEOUT = 30
 
 # Paths
-HTML_FILE = "guiltar_tabs.html"
 OUTPUT_DIR = "tabs"
+INDEX_FILE = "tab_index.json"
+EMBEDDINGS_FILE = "tab_embeddings.npz"
 ```
+
+## File Structure
+
+```
+guitar-agent/
+├── backup_tabs.py          # Tab backup tool
+├── tabs.py                 # Exploration CLI
+├── config.py               # Configuration
+├── lib/
+│   ├── parser.py           # Tab file parsing
+│   ├── index.py            # Search index
+│   ├── search.py           # Search functions
+│   ├── music.py            # Music theory (keys, chords)
+│   ├── medley.py           # Medley building
+│   ├── llm.py              # LMStudio client
+│   └── embeddings.py       # Embedding similarity
+├── tabs/                   # Your backed up tabs
+├── tab_index.json          # Search index (auto-generated)
+├── tab_embeddings.npz      # Embeddings (auto-generated)
+└── logs/                   # Backup logs
+```
+
+## How It Works
+
+### Medley Scoring Algorithm
+
+Each song transition is scored 0-100%:
+
+```
+Score = 0.30 * key_compatibility
+      + 0.25 * chord_overlap
+      + 0.15 * mood_similarity
+      + 0.25 * embedding_similarity
+      + 0.05 * type_match
+```
+
+The algorithm greedily selects the highest-scoring next song while avoiding artist repetition.
+
+### Embedding Generation
+
+Each song's embedding combines:
+1. Song identity (artist, title)
+2. LLM-generated mood and themes
+3. Extracted lyrics (filtered from chord notation)
+
+This creates rich semantic vectors that capture what songs are "about".
 
 ## Troubleshooting
 
-### "Rate limited" errors
-- Increase `MIN_DELAY` and `MAX_DELAY` in config.py
-- Wait a few hours before retrying
+### Backup Issues
 
-### Browser closes unexpectedly
-- Just run `python backup_tabs.py` again - it resumes from where it stopped
+| Problem | Solution |
+|---------|----------|
+| Rate limited | Increase delays in config.py |
+| Browser closes | Just run again - it resumes |
+| Failed tabs | Run `--retry` |
 
-### Some tabs failed to download
-- Run `python backup_tabs.py --retry` to retry failed tabs
-- Check `logs/` for error details
+### LLM Issues
 
-### Cookie dialog keeps appearing
-- The script tries to auto-dismiss it, but you can manually click "Reject All"
-  in the browser window during the initial setup phase
+| Problem | Solution |
+|---------|----------|
+| "No models loaded" | Load a model in LMStudio |
+| Embedding fails | Load an embedding model (not just chat) |
+| Slow enrichment | Normal - ~1 sec per tab |
 
-## Files
+## License
 
-| File | Purpose |
-|------|---------|
-| `guiltar_tabs.html` | Your exported favorites (you create this) |
-| `tab_urls.json` | Extracted URLs (auto-generated) |
-| `backup_manifest.json` | Tracks backup progress (auto-generated) |
-| `tabs/` | Your backed up tabs |
-| `logs/` | Backup logs |
-
-## Adding New Tabs Later
-
-1. Save new tabs on Ultimate Guitar website
-2. Re-export the "My Tabs" page to `guiltar_tabs.html`
-3. Run `python backup_tabs.py --sync`
-4. Only new tabs will be downloaded
+MIT
