@@ -27,3 +27,4 @@ guiltar_tabs.html
 # Tab exploration index (generated)
 tab_index.json
 tab_embeddings.npz
+tab_embeddings.json

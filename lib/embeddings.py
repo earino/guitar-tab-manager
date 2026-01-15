@@ -12,26 +12,41 @@ import config
 
 
 def load_embeddings(path: Path = None) -> dict:
-    """Load embeddings from numpy file."""
+    """Load embeddings from numpy file and JSON metadata."""
     path = path or Path(config.EMBEDDINGS_FILE)
+    meta_path = path.with_suffix(".json")
+
     if not path.exists():
         return {"file_paths": [], "embeddings": None}
 
-    data = np.load(path, allow_pickle=True)
+    # Load numerical embeddings (no pickle needed)
+    data = np.load(path, allow_pickle=False)
+    embeddings = data["embeddings"]
+
+    # Load file paths from JSON sidecar (safe, no pickle)
+    file_paths = []
+    if meta_path.exists():
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+            file_paths = meta.get("file_paths", [])
+
     return {
-        "file_paths": list(data["file_paths"]),
-        "embeddings": data["embeddings"],
+        "file_paths": file_paths,
+        "embeddings": embeddings,
     }
 
 
 def save_embeddings(file_paths: list[str], embeddings: np.ndarray, path: Path = None):
-    """Save embeddings to numpy file."""
+    """Save embeddings to numpy file and metadata to JSON."""
     path = path or Path(config.EMBEDDINGS_FILE)
-    np.savez_compressed(
-        path,
-        file_paths=np.array(file_paths),
-        embeddings=embeddings,
-    )
+    meta_path = path.with_suffix(".json")
+
+    # Save numerical embeddings only (no pickle needed)
+    np.savez_compressed(path, embeddings=embeddings)
+
+    # Save file paths to JSON sidecar (safe, human-readable)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump({"file_paths": file_paths}, f)
 
 
 def get_embedding_text(tab: dict, content: str) -> str:

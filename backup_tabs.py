@@ -30,6 +30,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Page, BrowserContext
 
@@ -432,11 +433,40 @@ async def extract_tab_content(page: Page) -> dict | None:
 
 def sanitize_filename(name: str) -> str:
     """Convert a string to a safe filename."""
+    # Remove null bytes (could truncate on some systems)
+    name = name.replace("\x00", "")
+    # Remove path traversal sequences
+    name = name.replace("..", "")
     # Replace problematic characters
     name = re.sub(r'[<>:"/\\|?*]', "", name)
     name = re.sub(r"\s+", "-", name)
     name = name.lower().strip("-")
-    return name[:100]  # Limit length
+    # Ensure non-empty result
+    name = name[:100] if name else "unnamed"
+    return name
+
+
+def validate_path_within_dir(file_path: Path, base_dir: Path) -> bool:
+    """Ensure file_path is within base_dir (prevent path traversal)."""
+    try:
+        resolved = file_path.resolve()
+        base_resolved = base_dir.resolve()
+        return str(resolved).startswith(str(base_resolved) + "/") or resolved == base_resolved
+    except (OSError, ValueError):
+        return False
+
+
+def is_safe_tab_url(url: str) -> bool:
+    """Validate URL is from Ultimate Guitar (prevent SSRF)."""
+    try:
+        parsed = urlparse(url)
+        return (
+            parsed.scheme == "https"
+            and parsed.netloc == "tabs.ultimate-guitar.com"
+            and parsed.path.startswith("/tab/")
+        )
+    except Exception:
+        return False
 
 
 def save_tab_file(tab_data: dict, tab_info: dict) -> tuple[Path, str, int]:
@@ -449,11 +479,17 @@ def save_tab_file(tab_data: dict, tab_info: dict) -> tuple[Path, str, int]:
     song_name = sanitize_filename(tab_data["title"] or tab_info["song_name"])
 
     # Create directory structure
-    output_dir = Path(config.OUTPUT_DIR) / artist_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    base_dir = Path(config.OUTPUT_DIR)
+    output_dir = base_dir / artist_dir
 
     # Target file path
     file_path = output_dir / f"{song_name}.txt"
+
+    # Security: validate path stays within OUTPUT_DIR
+    if not validate_path_within_dir(file_path, base_dir):
+        raise ValueError(f"Path traversal detected: {file_path}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
     temp_path = file_path.with_suffix(".txt.tmp")
 
     # Build file content with metadata header
@@ -500,6 +536,11 @@ async def backup_single_tab(
     Backup a single tab. Returns status: 'success', 'failed', or 'skipped'.
     """
     url = tab_info["url"]
+
+    # Security: validate URL before navigation (prevent SSRF)
+    if not is_safe_tab_url(url):
+        logger.error(f"Invalid URL rejected: {url}")
+        return "failed"
 
     # Check if already completed
     if manifest["tabs"].get(url, {}).get("status") == "completed":
