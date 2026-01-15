@@ -17,69 +17,79 @@ from html import unescape
 from config import HTML_FILE, URLS_FILE
 
 
+def parse_url_info(url: str) -> dict:
+    """
+    Extract artist, song name, and type from a tab URL.
+
+    URL format: https://tabs.ultimate-guitar.com/tab/artist-name/song-name-type-id
+    Example: https://tabs.ultimate-guitar.com/tab/counting-crows/mr-jones-chords-16066
+    """
+    # Parse URL: /tab/artist/song-name-type-id
+    parts = url.split("/tab/")[-1].split("/")
+    if len(parts) >= 2:
+        artist = parts[0].replace("-", " ").title()
+        song_part = parts[1]
+
+        # Determine tab type from URL
+        if "-chords-" in song_part:
+            tab_type = "Chords"
+            song_name = re.sub(r'-chords-\d+$', '', song_part)
+        elif "-ukulele-chords-" in song_part:
+            tab_type = "Ukulele"
+            song_name = re.sub(r'-ukulele-chords-\d+$', '', song_part)
+        elif "-tabs-" in song_part:
+            tab_type = "Tab"
+            song_name = re.sub(r'-tabs-\d+$', '', song_part)
+        elif "-tab-" in song_part:
+            tab_type = "Tab"
+            song_name = re.sub(r'-tab-\d+$', '', song_part)
+        elif "-bass-" in song_part:
+            tab_type = "Bass"
+            song_name = re.sub(r'-bass-\d+$', '', song_part)
+        else:
+            # Fallback: remove trailing -word-number pattern
+            tab_type = "Tab"
+            song_name = re.sub(r'-[a-z]+-\d+$', '', song_part)
+
+        song_name = song_name.replace("-", " ").title()
+
+        return {
+            "song_name": song_name,
+            "band_name": artist,
+            "type": tab_type,
+        }
+
+    return {"song_name": "Unknown", "band_name": "Unknown", "type": "Tab"}
+
+
 def extract_tabs_from_html(html_content: str) -> list[dict]:
     """
-    Extract tab information from Ultimate Guitar HTML export.
+    Extract tab URLs from Ultimate Guitar HTML export.
 
-    The HTML contains JSON data with tab entries. Fields are HTML-encoded:
-    song_url&quot;:&quot;https://tabs.ultimate-guitar.com/tab/...&quot;
-    song_name&quot;:&quot;Mr Jones&quot;
-    band_name&quot;:&quot;Counting Crows&quot;
-    type&quot;:&quot;Chords&quot;
+    Extracts all unique tab URLs and derives metadata from the URL itself.
+    This is more reliable than trying to correlate separate field extractions.
     """
     tabs = []
 
-    # Extract each field separately using simple patterns
-    # song_url comes before band_url, so we use that boundary
+    # Extract all tab URLs
     url_pattern = r'song_url&quot;:&quot;(https://tabs\.ultimate-guitar\.com/tab/[^&]+)&quot;'
-    song_pattern = r'song_name&quot;:&quot;([^&]+)&quot;'
-    band_pattern = r'band_name&quot;:&quot;([^&]+)&quot;'
-    type_pattern = r'&quot;type&quot;:&quot;(Chords|Tab|Bass|Ukulele|Power|Pro|Video|Drums)[^&]*&quot;'
-
     urls = re.findall(url_pattern, html_content)
-    songs = re.findall(song_pattern, html_content)
-    bands = re.findall(band_pattern, html_content)
-    types = re.findall(type_pattern, html_content)
-
-    # The lists should be the same length if we're extracting correctly
-    # Use the URL list as the primary since that's what we need
-    min_len = min(len(urls), len(songs), len(bands), len(types))
-
-    if min_len == 0:
-        # Fallback: just extract URLs and derive info from URL
-        for url in urls:
-            # Parse URL: /tab/artist/song-name-type-id
-            parts = url.split("/tab/")[-1].split("/")
-            if len(parts) >= 2:
-                artist = parts[0].replace("-", " ").title()
-                song_part = parts[1]
-                # Try to extract type from URL
-                tab_type = "Chords" if "chords" in song_part else "Tab"
-                song_name = re.sub(r'-(chords|tabs|tab)-\d+$', '', song_part)
-                song_name = song_name.replace("-", " ").title()
-
-                tabs.append({
-                    "url": url,
-                    "song_name": song_name,
-                    "band_name": artist,
-                    "type": tab_type,
-                })
-        return tabs
 
     seen_urls = set()
-    for i in range(min_len):
-        url = urls[i]
-
+    for url in urls:
         # Skip duplicates
         if url in seen_urls:
             continue
         seen_urls.add(url)
 
+        # Derive metadata from URL (reliable, always matches the actual tab)
+        info = parse_url_info(url)
+
         tabs.append({
-            "url": unescape(url),
-            "song_name": unescape(songs[i]),
-            "band_name": unescape(bands[i]),
-            "type": unescape(types[i]),
+            "url": url,
+            "song_name": info["song_name"],
+            "band_name": info["band_name"],
+            "type": info["type"],
         })
 
     return tabs
