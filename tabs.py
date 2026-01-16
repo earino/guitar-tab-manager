@@ -25,6 +25,7 @@ from lib import parser
 from lib import llm
 from lib import medley as medley_lib
 from lib import embeddings as emb_lib
+from lib import visualize as viz_lib
 
 
 def ensure_index(rebuild: bool = False) -> dict:
@@ -602,6 +603,129 @@ def cmd_medley(args):
     print(f"\nTip: Use --tabs to output the full combined tab sheet")
 
 
+MOOD_CATEGORIES = ["sad", "nostalgic", "hopeful", "romantic", "playful", "intense", "peaceful"]
+
+
+def cmd_classify_moods(args):
+    """Classify moods into semantic categories using LLM."""
+    import json as json_module
+
+    idx = ensure_index()
+
+    # Extract all unique moods
+    all_moods = set()
+    for tab in idx.get("tabs", {}).values():
+        moods = tab.get("mood") or []
+        all_moods.update(moods)
+
+    if not all_moods:
+        print("No moods found. Run 'python tabs.py enrich' first.")
+        return
+
+    print(f"Found {len(all_moods)} unique moods to classify")
+    print(f"Target categories: {', '.join(MOOD_CATEGORIES)}")
+
+    # Check LMStudio availability
+    try:
+        client = llm.require_client()
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        return
+
+    print("\nLMStudio connected! Classifying moods...")
+
+    # Classify all moods
+    mood_list = sorted(all_moods)
+    mapping = client.classify_moods(mood_list, MOOD_CATEGORIES)
+
+    # Save mapping
+    output_path = Path("mood_categories.json")
+    with open(output_path, "w", encoding="utf-8") as f:
+        json_module.dump(mapping, f, indent=2, sort_keys=True)
+
+    print(f"\nMapping saved to: {output_path}")
+
+    # Show summary
+    category_counts = {}
+    for mood, category in mapping.items():
+        category_counts[category] = category_counts.get(category, 0) + 1
+
+    print("\nCategory distribution:")
+    for cat in MOOD_CATEGORIES:
+        count = category_counts.get(cat, 0)
+        print(f"  {cat}: {count} moods")
+
+    # Show some examples
+    print("\nSample mappings:")
+    for mood, category in list(mapping.items())[:10]:
+        print(f"  {mood} -> {category}")
+
+
+def cmd_visualize(args):
+    """Generate interactive 2D/3D visualization of song embeddings."""
+    idx = ensure_index()
+
+    # Load embeddings
+    embeddings_data = emb_lib.load_embeddings()
+
+    if embeddings_data.get("embeddings") is None or len(embeddings_data.get("file_paths", [])) == 0:
+        print("No embeddings found. Run 'python tabs.py embed' first.")
+        return
+
+    embeddings = embeddings_data["embeddings"]
+    file_paths = embeddings_data["file_paths"]
+
+    print(f"Loaded {len(file_paths)} song embeddings")
+    print(f"Embedding dimensions: {embeddings.shape[1]}")
+
+    # Match embeddings to tab metadata
+    tabs_dict = idx.get("tabs", {})
+    tabs = []
+    valid_indices = []
+
+    for i, path in enumerate(file_paths):
+        if path in tabs_dict:
+            tabs.append(tabs_dict[path])
+            valid_indices.append(i)
+
+    if not tabs:
+        print("Could not match embeddings to tab metadata.")
+        return
+
+    # Filter embeddings to valid ones
+    embeddings = embeddings[valid_indices]
+    print(f"Matched {len(tabs)} songs with metadata")
+
+    # Reduce dimensions
+    n_components = 3 if args.three_d else 2
+    method = args.method
+
+    print(f"\nReducing dimensions using {method.upper()} to {n_components}D...")
+    reduced = viz_lib.reduce_dimensions(
+        embeddings,
+        method=method,
+        n_components=n_components,
+    )
+    print("Dimension reduction complete!")
+
+    # Create visualization
+    print(f"Creating visualization (colored by {args.color})...")
+    fig = viz_lib.create_visualization(
+        reduced,
+        tabs,
+        color_by=args.color,
+        dim=n_components,
+    )
+
+    # Save to HTML
+    output_path = Path(args.output)
+    viz_lib.save_html(fig, output_path)
+
+    print(f"\nVisualization saved to: {output_path}")
+    print(f"Open in your browser to explore your song collection!")
+    print(f"\nTip: Try different color options with --color (mood, key, artist, theme, type)")
+
+
 def main():
     parser_main = argparse.ArgumentParser(
         description="Guitar Tab Exploration Tool",
@@ -626,6 +750,10 @@ Medley building:
   medley    Build a medley from a seed song (uses all signals)
             Use --tabs to output combined tab sheet
 
+Visualization:
+  visualize Interactive 2D/3D visualization of song embeddings
+            Color by mood, key, artist, or theme
+
 Examples:
   python tabs.py list --artist "Pink Floyd"
   python tabs.py find --chord "Am,G,C" --type Chords
@@ -641,6 +769,8 @@ Examples:
   python tabs.py embed --limit 10
   python tabs.py search "sad songs"
   python tabs.py mood melancholic
+  python tabs.py visualize                         # 2D visualization
+  python tabs.py visualize --3d --color key        # 3D, colored by key
         """,
     )
 
@@ -724,6 +854,24 @@ Examples:
                           help="Output full combined tab sheet (not just summary)")
     p_medley.add_argument("--output", "-o", help="Write tabs to file instead of stdout")
     p_medley.set_defaults(func=cmd_medley)
+
+    # classify-moods command
+    p_classify = subparsers.add_parser("classify-moods", help="Classify moods into semantic categories via LLM")
+    p_classify.set_defaults(func=cmd_classify_moods)
+
+    # visualize command
+    p_viz = subparsers.add_parser("visualize", help="Interactive 2D/3D visualization of song embeddings")
+    p_viz.add_argument("--3d", dest="three_d", action="store_true",
+                       help="Generate 3D visualization (default: 2D)")
+    p_viz.add_argument("--color", "-c", default="mood",
+                       choices=["mood", "key", "artist", "theme", "type"],
+                       help="Attribute to color points by (default: mood)")
+    p_viz.add_argument("--method", "-m", default="tsne",
+                       choices=["tsne", "pca"],
+                       help="Dimensionality reduction method (default: tsne)")
+    p_viz.add_argument("--output", "-o", default="song_visualization.html",
+                       help="Output HTML file (default: song_visualization.html)")
+    p_viz.set_defaults(func=cmd_visualize)
 
     args = parser_main.parse_args()
 

@@ -28,3 +28,11 @@ guiltar_tabs.html
 tab_index.json
 tab_embeddings.npz
 tab_embeddings.json
+
+# Visualizations (generated)
+*_visualization.html
+song_visualization.html
+
+# Mood classification (generated)
+mood_categories.json
+.playwright-mcp/

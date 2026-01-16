@@ -184,6 +184,56 @@ Content:
         return embeddings
 
 
+    def classify_moods(self, moods: list[str], categories: list[str]) -> dict[str, str]:
+        """
+        Classify a list of moods into broader categories.
+
+        Args:
+            moods: List of mood strings to classify
+            categories: List of target category names
+
+        Returns dict mapping each mood to its category.
+        """
+        system_prompt = """You are a music mood classifier. Your task is to map specific mood words to broader categories.
+Respond ONLY with valid JSON mapping each mood to exactly one category.
+Do not include any explanation, just the JSON object."""
+
+        categories_str = ", ".join(categories)
+        moods_str = ", ".join(moods)
+
+        prompt = f"""Classify each mood into exactly one of these categories: {categories_str}
+
+Moods to classify:
+{moods_str}
+
+Return a JSON object mapping each mood to its category, like:
+{{"melancholic": "sad", "uplifting": "hopeful", ...}}"""
+
+        try:
+            response = self.chat(prompt, system_prompt=system_prompt, temperature=0.1)
+
+            # Parse JSON response
+            response = response.strip()
+            if response.startswith("```"):
+                response = response.split("\n", 1)[1]
+                response = response.rsplit("```", 1)[0]
+
+            result = json.loads(response)
+
+            # Validate all moods are mapped
+            for mood in moods:
+                if mood not in result:
+                    result[mood] = categories[0]  # Default to first category
+                elif result[mood] not in categories:
+                    result[mood] = categories[0]  # Fix invalid category
+
+            return result
+
+        except (json.JSONDecodeError, KeyError) as e:
+            # Return default mapping on failure
+            return {mood: categories[0] for mood in moods}
+
+
 def get_client() -> Optional[LMStudioClient]:
     """
     Get an LMStudio client if available.

@@ -28,6 +28,13 @@ Build coherent setlists that flow naturally:
 - **Lyrical coherence** (25%): Narrative makes sense
 - **Type matching** (5%): Similar tab formats
 
+### Visualization
+Explore your collection in interactive 2D/3D space:
+- **t-SNE/PCA reduction**: Project embeddings to viewable dimensions
+- **Color coding**: By mood, key, artist, or theme
+- **Interactive**: Zoom, pan, hover for song details
+- **Standalone HTML**: Opens in any browser, no server needed
+
 ## Quick Start
 
 ### Installation
@@ -220,6 +227,19 @@ Keys: Am -> Am -> Am -> Am -> C -> C
 | `python tabs.py medley "song" --tabs` | Build medley with full tab output |
 | `python tabs.py medley "song" --tabs -o file.txt` | Save medley tabs to file |
 
+### Visualization Commands
+
+| Command | Description |
+|---------|-------------|
+| `python tabs.py visualize` | Interactive 2D visualization |
+| `python tabs.py visualize --3d` | Interactive 3D visualization |
+| `python tabs.py visualize --color mood` | Color by mood (default) |
+| `python tabs.py visualize --color key` | Color by musical key |
+| `python tabs.py visualize --color artist` | Color by artist |
+| `python tabs.py visualize --color theme` | Color by primary theme |
+| `python tabs.py visualize --method pca` | Use PCA (faster than t-SNE) |
+| `python tabs.py visualize -o viz.html` | Custom output filename |
+
 ## Configuration
 
 Edit `config.py`:
@@ -304,6 +324,18 @@ This creates rich semantic vectors that capture what songs are "about".
 | "No models loaded" | Load a model in LMStudio |
 | Embedding fails | Load an embedding model (not just chat) |
 | Slow enrichment | Normal - ~1 sec per tab |
+
+## Bonus: 3D Embedding Visualization
+
+Explore your entire tab collection in 3D space - songs that are lyrically and thematically similar cluster together.
+
+![3D Song Embeddings colored by mood](docs/3d_mood_visualization.gif)
+
+Each point is a song, positioned by t-SNE reduction of its embedding vector. Colors represent LLM-classified mood categories (97 raw moods collapsed into 7 semantic groups). Hover over any point to see song details.
+
+```bash
+python tabs.py visualize --3d --color mood
+```
 
 ## License
 
