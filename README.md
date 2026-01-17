@@ -150,16 +150,18 @@ python tabs.py theme "lost love"
 
 ```
 Finding songs similar to: Jeff Buckley - Hallelujah Chords
-(Based on lyrical/thematic similarity via embeddings)
+(Comprehensive: key + chords + mood + themes + lyrics)
 
-  1. Led Zeppelin - Stairway To Heaven - 70% similar
-      Themes: spiritual journey, love
-  2. Johnny Cash - Hurt - 68% similar
-      Themes: self-destruction, regret
-  3. Simon & Garfunkel - Bridge Over Troubled Water - 66% similar
-      Themes: support, comfort
-  4. Eric Clapton - Tears In Heaven - 65% similar
-      Themes: loss, grief
+Using embeddings for lyrical similarity (374 songs)
+
+  1. Elvis Presley - Blowin In The Wind Ukulele Chords [Key: C] - 73% match
+      Key: C | Mood: melancholic, reflective | Themes: peace, social justice
+  2. Kansas - Carry On Wayward Son Chords [Key: C] - 73% match
+      Key: C | Mood: melancholic, reflective | Themes: inner struggle, search for peace
+  3. Nirvana - All Apologies Acoustic Chords [Key: C] - 71% match
+      Key: C | Mood: melancholic, reflective | Themes: apology, self-blame
+  4. Johnny Cash - American Iv Album Chords [Key: C] - 69% match
+      Key: C | Mood: melancholic, spiritual | Themes: death, judgment
 ```
 
 ### Medley Building
@@ -172,23 +174,27 @@ Using embeddings for thematic coherence (374 songs)
 MEDLEY (6 songs)
 ============================================================
 
-1. Jeff Buckley - Hallelujah Chords [Key: Am, Themes: love, faith]
+1. Jeff Buckley - Hallelujah Chords [Key: C, Capo: 1, Themes: love, loss]
+   -> Same key (C) | Remove capo | Strong lyrical connection
+2. Elvis Presley - Blowin In The Wind Ukulele Chords [Key: C, Themes: peace, social justice]
+   -> Same key (C) | Strong lyrical connection
+3. Johnny Cash - I Hung My Head Ukulele Chords [Key: C, Themes: regret, guilt]
+   -> Keys: C -> Am | Strong lyrical connection
+4. Counting Crows - Mr Jones Chords [Key: Am, Themes: identity, longing]
    -> Same key (Am) | Strong lyrical connection
-2. Live - Lightning Crashes Chords [Key: Am, Themes: birth and death]
-   -> Same key (Am) | Strong lyrical connection
-3. Simon & Garfunkel - Sound of Silence [Key: Am, Themes: isolation]
-   -> Same key (Am) | Strong lyrical connection
-4. The Beatles - Let It Be [Key: Am, Themes: spiritual comfort]
-   ...
+5. Creedence Clearwater Revival - Have You Ever Seen The Rain Chords [Key: Am, Themes: nature, emotional uncertainty]
+   -> Keys: Am -> C | Strong lyrical connection
+6. Misc Soundtrack - O Brother Where Art Thou - I Am A Man Of Constant Sorrow Chords [Key: C, Themes: loss, journey]
 
 ------------------------------------------------------------
 MEDLEY ANALYSIS
 ------------------------------------------------------------
 Unique artists: 6
-Avg transition score: 82.4%
-Thematic coherence: 78.1%
-Themes: love, faith, isolation, comfort, hope
-Keys: Am -> Am -> Am -> Am -> C -> C
+Total unique chords: 15
+Avg transition score: 80.5%
+Thematic coherence: 77.8%
+Themes: fame, longing, human suffering, nature, regret
+Keys: C -> C -> C -> Am -> Am -> C
 ```
 
 ## Command Reference
