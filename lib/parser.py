@@ -182,25 +182,48 @@ def has_lyrics(content: str) -> bool:
     return lyric_line_count >= 3  # At least 3 lines of lyrics
 
 
-def detect_key(chords: list[str]) -> str | None:
+def is_minor_chord(chord: str) -> bool:
     """
-    Attempt to detect the key from a list of chords.
+    Check if a chord is minor.
 
-    Simple heuristic: Use the first chord or most common chord as the key.
+    Correctly handles: Am (minor), Am7 (minor), Amin (minor)
+    Correctly rejects: Amaj7, Adim, Aaug, Asus4, Adom7
     """
-    if not chords:
+    # Remove bass note for analysis
+    chord = chord.split("/")[0]
+
+    # Minor indicators: 'm', 'min', 'minor' immediately after root
+    # But NOT 'maj', 'dim', 'aug', 'dom'
+    # Pattern: root note followed by 'm' that's not part of 'maj'/'dim'
+    if re.search(r'^[A-G][#b]?m(?:in|inor)?(?:[0-9]|$)', chord):
+        # Make sure it's not maj, dim, etc.
+        if not re.search(r'maj|dim|aug|dom', chord, re.IGNORECASE):
+            return True
+    return False
+
+
+def detect_key(content: str, chords: list[str] = None) -> str | None:
+    """
+    Attempt to detect the key from tab content.
+
+    Uses the FIRST chord in document order (not alphabetically sorted).
+    The first chord of a song is very often the key.
+    """
+    if chords is not None and not chords:
         return None
 
-    # Common major keys and their typical chord progressions
-    # For now, just return the first chord's root as a simple heuristic
-    first_chord = chords[0]
+    # Find the first chord in document order
+    first_match = CHORD_PATTERN.search(content)
+    if not first_match:
+        return None
+
+    first_chord = first_match.group(1)
 
     # Extract root note
     match = re.match(r'^([A-G][#b]?)', first_chord)
     if match:
         root = match.group(1)
-        # Check if it's minor
-        if 'm' in first_chord and 'maj' not in first_chord:
+        if is_minor_chord(first_chord):
             return root + "m"
         return root
 

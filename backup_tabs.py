@@ -74,7 +74,12 @@ def load_manifest() -> dict:
     """Load the backup manifest, creating if it doesn't exist."""
     manifest_path = Path(config.MANIFEST_FILE)
     if manifest_path.exists():
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.warning(f"Manifest corrupted ({e}), starting fresh. "
+                          f"Old manifest backed up to {manifest_path}.corrupt")
+            manifest_path.rename(manifest_path.with_suffix(".json.corrupt"))
     return {
         "last_sync": None,
         "tabs": {},
@@ -82,9 +87,11 @@ def load_manifest() -> dict:
 
 
 def save_manifest(manifest: dict):
-    """Save the backup manifest."""
+    """Save the backup manifest atomically."""
     manifest_path = Path(config.MANIFEST_FILE)
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    temp_path = manifest_path.with_suffix(".json.tmp")
+    temp_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    temp_path.replace(manifest_path)  # Atomic on POSIX, safer on Windows
 
 
 def update_tab_status(manifest: dict, url: str, status: str, **kwargs):
@@ -477,13 +484,14 @@ def save_tab_file(tab_data: dict, tab_info: dict) -> tuple[Path, str, int]:
     """
     artist_dir = sanitize_filename(tab_data["artist"] or tab_info["band_name"])
     song_name = sanitize_filename(tab_data["title"] or tab_info["song_name"])
+    tab_type = sanitize_filename(tab_info.get("type", "tab"))
 
     # Create directory structure
     base_dir = Path(config.OUTPUT_DIR)
     output_dir = base_dir / artist_dir
 
-    # Target file path
-    file_path = output_dir / f"{song_name}.txt"
+    # Target file path (include type to avoid collisions between Chords/Tab/Bass versions)
+    file_path = output_dir / f"{song_name}-{tab_type}.txt"
 
     # Security: validate path stays within OUTPUT_DIR
     if not validate_path_within_dir(file_path, base_dir):
@@ -590,6 +598,13 @@ async def backup_single_tab(
             retry_count=retry_count,
         )
         logger.error(f"  Failed: {e}")
+
+        # Exponential backoff on failure
+        if retry_count <= config.MAX_RETRIES:
+            backoff = config.BACKOFF_BASE * (2 ** (retry_count - 1))
+            logger.info(f"  Backing off {backoff}s before next request (retry {retry_count}/{config.MAX_RETRIES})")
+            await asyncio.sleep(backoff)
+
         return "failed"
 
 
@@ -673,15 +688,20 @@ async def run_backup(
             if tabs_since_rotation >= config.CONTEXT_ROTATION_SIZE:
                 logger.info("Rotating browser context...")
                 try:
+                    # Save auth state before closing
+                    storage_state = await context.storage_state()
                     await context.close()
                     user_agent = random.choice(config.USER_AGENTS)
-                    context = await browser.new_context(user_agent=user_agent)
+                    context = await browser.new_context(
+                        user_agent=user_agent,
+                        storage_state=storage_state  # Preserve auth
+                    )
                     page = await context.new_page()
                     # Navigate to base URL to initialize the page properly
                     await page.goto("https://www.ultimate-guitar.com", wait_until="domcontentloaded")
                     await asyncio.sleep(2)  # Let the page settle
                     tabs_since_rotation = 0
-                    logger.info("Context rotation complete")
+                    logger.info("Context rotation complete (auth preserved)")
                 except Exception as e:
                     logger.error(f"Context rotation failed: {e}, attempting recovery...")
                     try:
@@ -693,7 +713,7 @@ async def run_backup(
                     page = await context.new_page()
                     await page.goto("https://www.ultimate-guitar.com", wait_until="domcontentloaded")
                     tabs_since_rotation = 0
-                    logger.info("Browser recovery complete")
+                    logger.info("Browser recovery complete (may need re-auth)")
 
             # Batch pause
             if i % config.BATCH_SIZE == 0 and i < len(tabs_to_process):

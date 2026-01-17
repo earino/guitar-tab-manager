@@ -399,12 +399,22 @@ def cmd_embed(args):
             failed += 1
 
     # Combine with existing embeddings
-    if existing.get("embeddings") is not None and len(existing["file_paths"]) > 0:
-        all_paths = list(existing["file_paths"]) + new_paths
-        all_embeddings = np.vstack([existing["embeddings"], np.array(new_embeddings)])
+    if new_embeddings:
+        new_emb_array = np.array(new_embeddings)
+        if existing.get("embeddings") is not None and len(existing["file_paths"]) > 0:
+            all_paths = list(existing["file_paths"]) + new_paths
+            all_embeddings = np.vstack([existing["embeddings"], new_emb_array])
+        else:
+            all_paths = new_paths
+            all_embeddings = new_emb_array
     else:
-        all_paths = new_paths
-        all_embeddings = np.array(new_embeddings) if new_embeddings else np.array([])
+        # No new embeddings generated - keep existing
+        all_paths = list(existing.get("file_paths", []))
+        all_embeddings = existing.get("embeddings")
+        if all_embeddings is None or len(all_paths) == 0:
+            print("\nNo embeddings generated and none existing.")
+            print(f"  Failed: {failed}")
+            return
 
     # Save embeddings
     if len(all_paths) > 0:

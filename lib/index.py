@@ -35,10 +35,11 @@ def build_index(tabs_dir: Path, verbose: bool = False) -> dict:
             tab_data = parser.parse_tab_file(path)
 
             # Extract additional metadata
-            chords = parser.extract_chords(tab_data["content"])
-            sections = parser.extract_sections(tab_data["content"])
-            lyrics = parser.has_lyrics(tab_data["content"])
-            key = parser.detect_key(chords)
+            content = tab_data["content"]
+            chords = parser.extract_chords(content)
+            sections = parser.extract_sections(content)
+            lyrics = parser.has_lyrics(content)
+            key = parser.detect_key(content, chords)
 
             entry = {
                 "file_path": str(path),

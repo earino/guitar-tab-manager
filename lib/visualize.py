@@ -51,8 +51,15 @@ def reduce_dimensions(
         reducer = PCA(n_components=n_components, random_state=random_state)
         return reducer.fit_transform(embeddings)
 
+    # t-SNE requires perplexity < n_samples
+    # For very small datasets, fall back to PCA
+    if n_samples < 5:
+        reducer = PCA(n_components=n_components, random_state=random_state)
+        return reducer.fit_transform(embeddings)
+
     # t-SNE - adjust perplexity for small datasets
     effective_perplexity = min(perplexity, max(5, n_samples // 4))
+    effective_perplexity = min(effective_perplexity, n_samples - 1)  # Safety cap
 
     reducer = TSNE(
         n_components=n_components,

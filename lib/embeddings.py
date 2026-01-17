@@ -30,6 +30,13 @@ def load_embeddings(path: Path = None) -> dict:
             meta = json.load(f)
             file_paths = meta.get("file_paths", [])
 
+    # Validate alignment - mismatch means data corruption
+    if embeddings is not None and len(file_paths) != len(embeddings):
+        raise ValueError(
+            f"Embeddings/metadata mismatch: {len(embeddings)} embeddings, "
+            f"{len(file_paths)} paths. Delete {path} and {meta_path} to rebuild."
+        )
+
     return {
         "file_paths": file_paths,
         "embeddings": embeddings,
